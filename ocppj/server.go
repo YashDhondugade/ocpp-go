@@ -126,13 +126,20 @@ func (s *Server) SetDisconnectedClientHandler(handler ClientHandler) {
 //
 // An error may be returned, if the websocket server couldn't be started.
 func (s *Server) Start(listenPort int, listenPath string) {
+	log.Debugf("[Start] Starting OCPP server on port %d and path %s", listenPort, listenPath)
+
 	// Set internal message handler
+	log.Debugf("[Start] Setting up server handlers")
 	s.server.SetCheckClientHandler(s.checkClientHandler)
 	s.server.SetNewClientHandler(s.onClientConnected)
 	s.server.SetDisconnectedClientHandler(s.onClientDisconnected)
 	s.server.SetMessageHandler(s.ocppMessageHandler)
+
+	log.Debugf("[Start] Starting dispatcher")
 	s.dispatcher.Start()
+
 	// Serve & run
+	log.Debugf("[Start] Starting websocket server")
 	s.server.Start(listenPort, listenPath)
 	// TODO: return error?
 }
@@ -231,62 +238,77 @@ func (s *Server) SendError(clientID string, requestId string, errorCode ocpp.Err
 }
 
 func (s *Server) ocppMessageHandler(wsChannel ws.Channel, data []byte) error {
+	log.Debugf("[ocppMessageHandler] Starting to process message from client %s", wsChannel.ID())
+
 	parsedJson, err := ParseRawJsonMessage(data)
 	if err != nil {
-		log.Error(err)
+		log.Errorf("[ocppMessageHandler] Failed to parse raw JSON message from client %s: %v", wsChannel.ID(), err)
 		return err
 	}
-	log.Debugf("received JSON message from %s: %s", wsChannel.ID(), string(data))
+	log.Debugf("[ocppMessageHandler] Successfully parsed JSON message from %s: %s", wsChannel.ID(), string(data))
+
 	// Get pending requests for client
 	pending := s.RequestState.GetClientState(wsChannel.ID())
+	log.Debugf("[ocppMessageHandler] Retrieved pending requests state for client %s", wsChannel.ID())
+
 	message, err := s.ParseMessage(parsedJson, pending)
 	if err != nil {
 		ocppErr := err.(*ocpp.Error)
 		messageID := ocppErr.MessageId
+		log.Errorf("[ocppMessageHandler] Failed to parse OCPP message from client %s: %v", wsChannel.ID(), err)
+
 		// Support ad-hoc callback for invalid message handling
 		if s.invalidMessageHook != nil {
+			log.Debugf("[ocppMessageHandler] Invoking invalid message hook for client %s", wsChannel.ID())
 			err2 := s.invalidMessageHook(wsChannel, ocppErr, string(data), parsedJson)
 			// If the hook returns an error, use it as output error. If not, use the original error.
 			if err2 != nil {
 				ocppErr = err2
 				ocppErr.MessageId = messageID
+				log.Debugf("[ocppMessageHandler] Invalid message hook returned custom error for client %s", wsChannel.ID())
 			}
 		}
 		err = ocppErr
 		// Send error to other endpoint if a message ID is available
 		if ocppErr.MessageId != "" {
+			log.Debugf("[ocppMessageHandler] Sending error response to client %s for message ID %s", wsChannel.ID(), ocppErr.MessageId)
 			err2 := s.SendError(wsChannel.ID(), ocppErr.MessageId, ocppErr.Code, ocppErr.Description, nil)
 			if err2 != nil {
+				log.Errorf("[ocppMessageHandler] Failed to send error response to client %s: %v", wsChannel.ID(), err2)
 				return err2
 			}
 		}
-		log.Error(err)
 		return err
 	}
+
 	if message != nil {
 		switch message.GetMessageTypeId() {
 		case CALL:
 			call := message.(*Call)
-			log.Debugf("handling incoming CALL [%s, %s] from %s", call.UniqueId, call.Action, wsChannel.ID())
+			log.Debugf("[ocppMessageHandler] Processing incoming CALL [%s, %s] from %s", call.UniqueId, call.Action, wsChannel.ID())
 			if s.requestHandler != nil {
+				log.Debugf("[ocppMessageHandler] Invoking request handler for client %s", wsChannel.ID())
 				s.requestHandler(wsChannel, call.Payload, call.UniqueId, call.Action)
 			}
 		case CALL_RESULT:
 			callResult := message.(*CallResult)
-			log.Debugf("handling incoming CALL RESULT [%s] from %s", callResult.UniqueId, wsChannel.ID())
+			log.Debugf("[ocppMessageHandler] Processing incoming CALL RESULT [%s] from %s", callResult.UniqueId, wsChannel.ID())
 			s.dispatcher.CompleteRequest(wsChannel.ID(), callResult.GetUniqueId())
 			if s.responseHandler != nil {
+				log.Debugf("[ocppMessageHandler] Invoking response handler for client %s", wsChannel.ID())
 				s.responseHandler(wsChannel, callResult.Payload, callResult.UniqueId)
 			}
 		case CALL_ERROR:
 			callError := message.(*CallError)
-			log.Debugf("handling incoming CALL RESULT [%s] from %s", callError.UniqueId, wsChannel.ID())
+			log.Debugf("[ocppMessageHandler] Processing incoming CALL ERROR [%s] from %s", callError.UniqueId, wsChannel.ID())
 			s.dispatcher.CompleteRequest(wsChannel.ID(), callError.GetUniqueId())
 			if s.errorHandler != nil {
+				log.Debugf("[ocppMessageHandler] Invoking error handler for client %s", wsChannel.ID())
 				s.errorHandler(wsChannel, ocpp.NewError(callError.ErrorCode, callError.ErrorDescription, callError.UniqueId), callError.ErrorDetails)
 			}
 		}
 	}
+	log.Debugf("[ocppMessageHandler] Completed processing message from client %s", wsChannel.ID())
 	return nil
 }
 

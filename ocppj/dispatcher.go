@@ -403,11 +403,13 @@ func NewDefaultServerDispatcher(queueMap ServerQueueMap) *DefaultServerDispatche
 func (d *DefaultServerDispatcher) Start() {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
+	log.Debugf("[DefaultServerDispatcher.Start] Starting server dispatcher")
 	d.requestChannel = make(chan string, 20)
 	d.timerC = make(chan string, 10)
 	d.stoppedC = make(chan struct{}, 1)
 	d.running = true
 	go d.messagePump()
+	log.Debugf("[DefaultServerDispatcher.Start] Server dispatcher started successfully")
 }
 
 func (d *DefaultServerDispatcher) IsRunning() bool {
@@ -419,8 +421,10 @@ func (d *DefaultServerDispatcher) IsRunning() bool {
 func (d *DefaultServerDispatcher) Stop() {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
+	log.Debugf("[DefaultServerDispatcher.Stop] Stopping server dispatcher")
 	d.running = false
 	close(d.stoppedC)
+	log.Debugf("[DefaultServerDispatcher.Stop] Server dispatcher stopped successfully")
 }
 
 func (d *DefaultServerDispatcher) SetTimeout(timeout time.Duration) {
@@ -428,17 +432,25 @@ func (d *DefaultServerDispatcher) SetTimeout(timeout time.Duration) {
 }
 
 func (d *DefaultServerDispatcher) CreateClient(clientID string) {
+	log.Debugf("[DefaultServerDispatcher.CreateClient] Creating client %s", clientID)
 	if d.IsRunning() {
 		_ = d.queueMap.GetOrCreate(clientID)
+		log.Debugf("[DefaultServerDispatcher.CreateClient] Client %s created successfully", clientID)
+	} else {
+		log.Debugf("[DefaultServerDispatcher.CreateClient] Cannot create client %s - dispatcher not running", clientID)
 	}
 }
 
 func (d *DefaultServerDispatcher) DeleteClient(clientID string) {
+	log.Debugf("[DefaultServerDispatcher.DeleteClient] Deleting client %s", clientID)
 	d.queueMap.Remove(clientID)
 	if d.IsRunning() {
 		d.mutex.RLock()
 		d.requestChannel <- clientID
 		d.mutex.RUnlock()
+		log.Debugf("[DefaultServerDispatcher.DeleteClient] Client %s deleted successfully", clientID)
+	} else {
+		log.Debugf("[DefaultServerDispatcher.DeleteClient] Cannot process deletion for client %s - dispatcher not running", clientID)
 	}
 }
 
@@ -455,19 +467,26 @@ func (d *DefaultServerDispatcher) SetPendingRequestState(state ServerState) {
 }
 
 func (d *DefaultServerDispatcher) SendRequest(clientID string, req RequestBundle) error {
+	log.Debugf("[DefaultServerDispatcher.SendRequest] Sending request %s to client %s", req.Call.UniqueId, clientID)
 	if d.network == nil {
-		return fmt.Errorf("cannot send request %v, no network server was set", req.Call.UniqueId)
+		err := fmt.Errorf("cannot send request %v, no network server was set", req.Call.UniqueId)
+		log.Errorf("[DefaultServerDispatcher.SendRequest] %v", err)
+		return err
 	}
 	q, ok := d.queueMap.Get(clientID)
 	if !ok {
-		return fmt.Errorf("cannot send request %s, no client %s exists", req.Call.UniqueId, clientID)
+		err := fmt.Errorf("cannot send request %s, no client %s exists", req.Call.UniqueId, clientID)
+		log.Errorf("[DefaultServerDispatcher.SendRequest] %v", err)
+		return err
 	}
 	if err := q.Push(req); err != nil {
+		log.Errorf("[DefaultServerDispatcher.SendRequest] Failed to push request to queue: %v", err)
 		return err
 	}
 	d.mutex.RLock()
 	d.requestChannel <- clientID
 	d.mutex.RUnlock()
+	log.Debugf("[DefaultServerDispatcher.SendRequest] Request %s queued for client %s", req.Call.UniqueId, clientID)
 	return nil
 }
 
@@ -571,10 +590,11 @@ func (d *DefaultServerDispatcher) messagePump() {
 }
 
 func (d *DefaultServerDispatcher) dispatchNextRequest(clientID string) (clientCtx clientTimeoutContext) {
+	log.Debugf("[DefaultServerDispatcher.dispatchNextRequest] Dispatching next request for client %s", clientID)
 	// Get first element in queue
 	q, ok := d.queueMap.Get(clientID)
 	if !ok {
-		log.Errorf("failed to dispatch next request for %s, no request queue available", clientID)
+		log.Errorf("[DefaultServerDispatcher.dispatchNextRequest] Failed to dispatch next request for %s, no request queue available", clientID)
 		return
 	}
 	el := q.Peek()
@@ -584,7 +604,7 @@ func (d *DefaultServerDispatcher) dispatchNextRequest(clientID string) (clientCt
 	d.pendingRequestState.AddPendingRequest(clientID, callID, bundle.Call.Payload)
 	err := d.network.Write(clientID, jsonMessage)
 	if err != nil {
-		log.Errorf("error while sending message: %v", err)
+		log.Errorf("[DefaultServerDispatcher.dispatchNextRequest] Error while sending message: %v", err)
 		// TODO: handle retransmission instead of removing pending request
 		d.CompleteRequest(clientID, callID)
 		if d.onRequestCancel != nil {
@@ -598,14 +618,14 @@ func (d *DefaultServerDispatcher) dispatchNextRequest(clientID string) (clientCt
 		ctx, cancel := context.WithTimeout(context.TODO(), d.timeout)
 		clientCtx = clientTimeoutContext{ctx: ctx, cancel: cancel}
 	}
-	log.Infof("dispatched request %s for %s", callID, clientID)
-	log.Debugf("sent JSON message to %s: %s", clientID, string(jsonMessage))
+	log.Infof("[DefaultServerDispatcher.dispatchNextRequest] Dispatched request %s for %s", callID, clientID)
+	log.Debugf("[DefaultServerDispatcher.dispatchNextRequest] Sent JSON message to %s: %s", clientID, string(jsonMessage))
 	return
 }
 
 func (d *DefaultServerDispatcher) waitForTimeout(clientID string, clientCtx clientTimeoutContext) {
 	defer clientCtx.cancel()
-	log.Debugf("started timeout timer for %s", clientID)
+	log.Debugf("[DefaultServerDispatcher.waitForTimeout] Started timeout timer for %s", clientID)
 	select {
 	case <-clientCtx.ctx.Done():
 		err := clientCtx.ctx.Err()
@@ -615,35 +635,38 @@ func (d *DefaultServerDispatcher) waitForTimeout(clientID string, clientCtx clie
 			defer d.mutex.RUnlock()
 			if d.running {
 				d.timerC <- clientID
+				log.Debugf("[DefaultServerDispatcher.waitForTimeout] Timeout triggered for client %s", clientID)
 			}
 		} else {
-			log.Debugf("timeout canceled for %s", clientID)
+			log.Debugf("[DefaultServerDispatcher.waitForTimeout] Timeout canceled for %s", clientID)
 		}
 	case <-d.stoppedC:
 		// Server was stopped, every pending timeout gets canceled
+		log.Debugf("[DefaultServerDispatcher.waitForTimeout] Server stopped, canceling timeout for %s", clientID)
 	}
 }
 
 func (d *DefaultServerDispatcher) CompleteRequest(clientID string, requestID string) {
+	log.Debugf("[DefaultServerDispatcher.CompleteRequest] Completing request %s for client %s", requestID, clientID)
 	q, ok := d.queueMap.Get(clientID)
 	if !ok {
-		log.Errorf("attempting to complete request for client %v, but no matching queue found", clientID)
+		log.Errorf("[DefaultServerDispatcher.CompleteRequest] Attempting to complete request for client %v, but no matching queue found", clientID)
 		return
 	}
 	el := q.Peek()
 	if el == nil {
-		log.Errorf("attempting to pop front of queue, but queue is empty")
+		log.Errorf("[DefaultServerDispatcher.CompleteRequest] Attempting to pop front of queue, but queue is empty")
 		return
 	}
 	bundle, _ := el.(RequestBundle)
 	callID := bundle.Call.GetUniqueId()
 	if callID != requestID {
-		log.Errorf("internal state mismatch: processing response for %v but expected response for %v", requestID, callID)
+		log.Errorf("[DefaultServerDispatcher.CompleteRequest] Internal state mismatch: processing response for %v but expected response for %v", requestID, callID)
 		return
 	}
 	q.Pop()
 	d.pendingRequestState.DeletePendingRequest(clientID, requestID)
-	log.Debugf("completed request %s for %s", callID, clientID)
+	log.Debugf("[DefaultServerDispatcher.CompleteRequest] Request %s completed for client %s", callID, clientID)
 	// Signal that next message in queue may be sent
 	d.readyForDispatch <- clientID
 }
