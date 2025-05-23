@@ -282,6 +282,7 @@ type Server struct {
 
 // Creates a new simple websocket server (the websockets are not secured).
 func NewServer() *Server {
+	fmt.Println("NewServer- 1")
 	router := mux.NewRouter()
 	return &Server{
 		httpServer:    &http.Server{},
@@ -549,15 +550,13 @@ out:
 	}
 	// Check whether client exists
 	server.connMutex.Lock()
-	// There is already a connection with the same ID. Close the new one immediately with a PolicyViolation.
-	if _, exists := server.connections[id]; exists {
-		server.connMutex.Unlock()
-		server.error(fmt.Errorf("client %s already exists, closing duplicate client", id))
-		_ = conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
-			time.Now().Add(server.timeoutConfig.WriteWait))
-		_ = conn.Close()
-		return
+	// If there is already a connection with the same ID, close it gracefully before creating the new one
+	if existingWs, exists := server.connections[id]; exists {
+		log.Infof("client %s already exists, closing old connection before creating new one", id)
+		// Close the old connection gracefully
+		existingWs.closeC <- websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "new connection request"}
+		// Wait a short time to allow graceful closure
+		time.Sleep(100 * time.Millisecond)
 	}
 	// Add new client
 	server.connections[ws.id] = &ws
