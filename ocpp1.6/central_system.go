@@ -538,6 +538,7 @@ func (cs *centralSystem) SendRequestAsync(clientId string, request ocpp.Request,
 
 func (cs *centralSystem) Start(listenPort int, listenPath string) {
 	// Start server
+	fmt.Println("Starting central system")
 	cs.server.Start(listenPort, listenPath)
 }
 
