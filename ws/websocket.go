@@ -538,21 +538,20 @@ out:
 		return
 	}
 	// Check whether client exists
-	server.connMutex.Lock()
-	// There is already a connection with the same ID. Close the new one immediately with a PolicyViolation.
-	if _, exists := server.connections[id]; exists {
-		server.connMutex.Unlock()
-		server.error(fmt.Errorf("client %s already exists, closing duplicate client", id))
-		_ = conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
-			time.Now().Add(server.timeoutConfig.WriteWait))
-		_ = conn.Close()
-		return
+	server.connMutex.RLock()
+	existingConn, exists := server.connections[id]
+	server.connMutex.RUnlock()
+
+	if exists {
+		server.error(fmt.Errorf("client %s already exists, closing existing client", id))
+		existingConn.closeC <- websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "new connection request"}
+		time.Sleep(10 * time.Second)
 	}
 	// Add new client
+	server.connMutex.Lock()
 	server.connections[ws.id] = &ws
 	server.connMutex.Unlock()
-	// Read and write routines are started in separate goroutines and function will return immediately
+	//Read and write routines are started in separate goroutines and function will return immediately
 	go server.writePump(&ws)
 	go server.readPump(&ws)
 	if server.newClientHandler != nil {
@@ -644,9 +643,14 @@ func (server *Server) writePump(ws *WebSocket) {
 				time.Now().Add(server.timeoutConfig.WriteWait),
 			); err != nil {
 				server.error(fmt.Errorf("failed to write close message for connection %s: %w", ws.id, err))
+				log.Debugf("failed to send close control message to %s: %v", ws.ID(), err)
+			} else {
+				log.Debugf("successfully sent close control message to %s", ws.ID())
 			}
 			// Invoking cleanup
+			log.Debugf("starting cleanup for connection %s", ws.ID())
 			server.cleanupConnection(ws)
+			log.Debugf("completed cleanup for connection %s", ws.ID())
 			return
 		case closed, ok := <-ws.forceCloseC:
 			if !ok || closed != nil {
