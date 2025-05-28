@@ -539,13 +539,13 @@ out:
 	}
 	// Check whether client exists
 	server.connMutex.RLock()
-	existingConn, exists := server.connections[id]
+	_, exists := server.connections[id]
 	server.connMutex.RUnlock()
 
 	if exists {
 		server.error(fmt.Errorf("client %s already exists, closing existing client", id))
-		existingConn.closeC <- websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "new connection request"}
-		time.Sleep(10 * time.Second)
+		//existingConn.closeC <- websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "new connection request"}
+		//time.Sleep(10 * time.Second)
 	}
 	// Add new client
 	server.connMutex.Lock()
