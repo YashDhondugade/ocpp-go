@@ -119,101 +119,86 @@ type ServerState interface {
 // Request State Map implementation
 // --------------------------------
 
-// Simple implementation of ServerState, using a map.
+// Simple implementation of ServerState, using a sync.Map.
 // Supports any amount of clients and stores the pending requests for each client in a
 // clientState struct.
 //
 // Client data is not deleted automatically; it should be deleted after a client session has ended.
 //
-// May internally use a mutex for concurrent access to the data struct.
-// See NewServerState for more info.
+// Uses sync.Map internally for concurrent access, which is optimized for cases where items
+// are frequently read but infrequently updated.
 type serverState struct {
-	pendingRequestState map[string]ClientState
-	mutex               *sync.RWMutex
+	pendingRequestState sync.Map
 }
 
 // Creates a simple struct implementing ServerState, to be used by server dispatchers.
 //
-// If no mutex is passed, then atomic access to the data struct is not guaranteed, and race conditions may arise.
+// The mutex parameter is kept for backward compatibility but is no longer used
+// as sync.Map handles synchronization internally.
 func NewServerState(m *sync.RWMutex) ServerState {
 	return &serverState{
-		pendingRequestState: map[string]ClientState{},
-		mutex:               m,
+		pendingRequestState: sync.Map{},
 	}
 }
 
 func (d *serverState) AddPendingRequest(clientID string, requestID string, req ocpp.Request) {
-	if d.mutex != nil {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-	}
 	state := d.getOrCreateState(clientID)
 	state.AddPendingRequest(requestID, req)
 }
 
 func (d *serverState) DeletePendingRequest(clientID string, requestID string) {
-	if d.mutex != nil {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-	}
-	state, exists := d.pendingRequestState[clientID]
+	stateVal, exists := d.pendingRequestState.Load(clientID)
 	if !exists {
 		return
 	}
+	state := stateVal.(ClientState)
 	state.DeletePendingRequest(requestID)
 }
 
 func (d *serverState) GetClientState(clientID string) ClientState {
-	if d.mutex != nil {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-	}
 	return d.getOrCreateState(clientID)
 }
 
 func (d *serverState) HasPendingRequest(clientID string) bool {
-	if d.mutex != nil {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
+	stateVal, exists := d.pendingRequestState.Load(clientID)
+	if !exists {
+		return false
 	}
-	state, exists := d.pendingRequestState[clientID]
-	return exists && state.HasPendingRequest()
+	state := stateVal.(ClientState)
+	return state.HasPendingRequest()
 }
 
 func (d *serverState) HasPendingRequests() bool {
-	if d.mutex != nil {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-	}
-	for _, s := range d.pendingRequestState {
-		if s.HasPendingRequest() {
-			return true
+	hasPending := false
+	d.pendingRequestState.Range(func(_, value interface{}) bool {
+		state := value.(ClientState)
+		if state.HasPendingRequest() {
+			hasPending = true
+			return false // Stop iteration
 		}
-	}
-	return false
+		return true // Continue iteration
+	})
+	return hasPending
 }
 
 func (d *serverState) ClearClientPendingRequest(clientID string) {
-	if d.mutex != nil {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-	}
-	delete(d.pendingRequestState, clientID)
+	d.pendingRequestState.Delete(clientID)
 }
 
 func (d *serverState) ClearAllPendingRequests() {
-	if d.mutex != nil {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-	}
-	d.pendingRequestState = map[string]ClientState{}
+	d.pendingRequestState = sync.Map{}
 }
 
 func (d *serverState) getOrCreateState(clientID string) ClientState {
-	state, exists := d.pendingRequestState[clientID]
+	stateVal, exists := d.pendingRequestState.Load(clientID)
 	if !exists {
-		state = NewClientState()
-		d.pendingRequestState[clientID] = state
+		state := NewClientState()
+		stateVal, loaded := d.pendingRequestState.LoadOrStore(clientID, state)
+		if loaded {
+			// Another goroutine created the state before us
+			return stateVal.(ClientState)
+		}
+		return state
 	}
-	return state
+	return stateVal.(ClientState)
 }
