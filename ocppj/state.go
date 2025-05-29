@@ -163,11 +163,35 @@ func (d *serverState) DeletePendingRequest(clientID string, requestID string) {
 	state.DeletePendingRequest(requestID)
 }
 
-func (d *serverState) GetClientState(clientID string) ClientState {
+func (d *serverState) GetClientState1(clientID string) ClientState {
 	if d.mutex != nil {
 		d.mutex.Lock()
 		defer d.mutex.Unlock()
 	}
+	return d.getOrCreateState(clientID)
+}
+func (d *serverState) GetClientState(clientID string) ClientState {
+	log.Debugf("[GetClientState] Starting to get client state for client %s", clientID)
+
+	if d.mutex == nil {
+		return d.getOrCreateState(clientID)
+	}
+
+	log.Debugf("[GetClientState] Acquiring read lock for client %s", clientID)
+	d.mutex.RLock()
+	state, exists := d.pendingRequestState[clientID]
+	d.mutex.RUnlock()
+	log.Debugf("[GetClientState] Released read lock for client %s, state exists: %v", clientID, exists)
+
+	if exists {
+		log.Debugf("[GetClientState] Returning existing state for client %s", clientID)
+		return state
+	}
+
+	log.Debugf("[GetClientState] Acquiring write lock for client %s to create new state", clientID)
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+	log.Debugf("[GetClientState] Creating new state for client %s", clientID)
 	return d.getOrCreateState(clientID)
 }
 
