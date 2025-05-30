@@ -164,9 +164,13 @@ func (d *DefaultClientDispatcher) SendRequest(req RequestBundle) error {
 	if err := d.requestQueue.Push(req); err != nil {
 		return err
 	}
+	log.Infof("ESP SendRequest: Acquire lock", req.Call.UniqueId)
 	d.mutex.RLock()
 	d.requestChannel <- true
+	log.Infof("ESP SendRequest: wrote to channel", req.Call.UniqueId)
 	d.mutex.RUnlock()
+	log.Infof("ESP SendRequest: Released lock", req.Call.UniqueId)
+
 	return nil
 }
 
