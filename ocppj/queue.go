@@ -48,8 +48,10 @@ func (q *FIFOClientQueue) Init() {
 }
 
 func (q *FIFOClientQueue) Push(element interface{}) error {
+	log.Infof("ESP Push: Acquire lock")
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
+	log.Infof("ESP SendRequest: Release lock")
 	if len(q.elements) >= q.capacity && q.capacity > 0 {
 		return fmt.Errorf("request queue is full, cannot push new element")
 	}
