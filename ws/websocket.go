@@ -263,7 +263,7 @@ type WsServer interface {
 //
 // Use the NewServer or NewTLSServer functions to create a new server.
 type Server struct {
-	connections         map[string]*WebSocket
+	connections         sync.Map
 	httpServer          *http.Server
 	messageHandler      func(ws Channel, data []byte) error
 	checkClientHandler  func(id string, r *http.Request) bool
@@ -275,7 +275,6 @@ type Server struct {
 	timeoutConfig       ServerTimeoutConfig
 	upgrader            websocket.Upgrader
 	errC                chan error
-	connMutex           sync.RWMutex
 	addr                *net.TCPAddr
 	httpHandler         *mux.Router
 }
@@ -376,9 +375,10 @@ func (server *Server) Addr() *net.TCPAddr {
 }
 
 func (server *Server) Connections(websocketId string) *WebSocket {
-	server.connMutex.RLock()
-	defer server.connMutex.RUnlock()
-	return server.connections[websocketId]
+	if wsInterface, ok := server.connections.Load(websocketId); ok {
+		return wsInterface.(*WebSocket)
+	}
+	return nil
 }
 
 func (server *Server) AddHttpHandler(listenPath string, handler func(w http.ResponseWriter, r *http.Request)) {
@@ -386,10 +386,6 @@ func (server *Server) AddHttpHandler(listenPath string, handler func(w http.Resp
 }
 
 func (server *Server) Start(port int, listenPath string) {
-	server.connMutex.Lock()
-	server.connections = make(map[string]*WebSocket)
-	server.connMutex.Unlock()
-
 	if server.httpServer == nil {
 		server.httpServer = &http.Server{}
 	}
@@ -439,33 +435,30 @@ func (server *Server) Stop() {
 }
 
 func (server *Server) StopConnection(id string, closeError websocket.CloseError) error {
-	server.connMutex.RLock()
-	ws, ok := server.connections[id]
-	server.connMutex.RUnlock()
-
+	wsInterface, ok := server.connections.Load(id)
 	if !ok {
 		return fmt.Errorf("couldn't stop websocket connection. No connection with id %s is open", id)
 	}
+	ws := wsInterface.(*WebSocket)
 	log.Debugf("sending stop signal for websocket %s", ws.ID())
 	ws.closeC <- closeError
 	return nil
 }
 
 func (server *Server) stopConnections() {
-	server.connMutex.RLock()
-	defer server.connMutex.RUnlock()
-	for _, conn := range server.connections {
-		conn.closeC <- websocket.CloseError{Code: websocket.CloseNormalClosure, Text: ""}
-	}
+	server.connections.Range(func(key, value interface{}) bool {
+		ws := value.(*WebSocket)
+		ws.closeC <- websocket.CloseError{Code: websocket.CloseNormalClosure, Text: ""}
+		return true
+	})
 }
 
 func (server *Server) Write(webSocketId string, data []byte) error {
-	server.connMutex.RLock()
-	defer server.connMutex.RUnlock()
-	ws, ok := server.connections[webSocketId]
+	wsInterface, ok := server.connections.Load(webSocketId)
 	if !ok {
 		return fmt.Errorf("couldn't write to websocket. No socket with id %v is open", webSocketId)
 	}
+	ws := wsInterface.(*WebSocket)
 	log.Debugf("queuing data for websocket %s", webSocketId)
 	ws.outQueue <- data
 	return nil
@@ -548,10 +541,9 @@ out:
 		return
 	}
 	// Check whether client exists
-	server.connMutex.Lock()
-	// There is already a connection with the same ID. Close the new one immediately with a PolicyViolation.
-	if existingWs, exists := server.connections[id]; exists {
-		server.connMutex.Unlock()
+	if existingWsInterface, exists := server.connections.Load(id); exists {
+		existingWs := existingWsInterface.(*WebSocket)
+		log.Debugf("client %s already exists, closing duplicate new client", id)
 		server.error(fmt.Errorf("client %s already exists, closing duplicate client", id))
 		// new connection closes with PolicyViolation
 		_ = conn.WriteControl(websocket.CloseMessage,
@@ -559,6 +551,7 @@ out:
 			time.Now().Add(server.timeoutConfig.WriteWait))
 		_ = conn.Close()
 
+		log.Debugf("closing existing connection for %s", id)
 		// cleans existing connection
 		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "a connection with this ID already exists"),
@@ -568,8 +561,7 @@ out:
 		return
 	}
 	// Add new client
-	server.connections[ws.id] = &ws
-	server.connMutex.Unlock()
+	server.connections.Store(ws.id, &ws)
 	// Read and write routines are started in separate goroutines and function will return immediately
 	go server.writePump(&ws)
 	go server.readPump(&ws)
@@ -681,11 +673,9 @@ func (server *Server) writePump(ws *WebSocket) {
 // From this moment onwards, no new messages may be sent.
 func (server *Server) cleanupConnection(ws *WebSocket) {
 	_ = ws.connection.Close()
-	server.connMutex.Lock()
 	close(ws.outQueue)
 	close(ws.closeC)
-	delete(server.connections, ws.id)
-	server.connMutex.Unlock()
+	server.connections.Delete(ws.id)
 	log.Infof("closed connection to %s", ws.ID())
 	if server.disconnectedHandler != nil {
 		server.disconnectedHandler(ws)
