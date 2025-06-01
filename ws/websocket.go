@@ -550,13 +550,21 @@ out:
 	// Check whether client exists
 	server.connMutex.Lock()
 	// There is already a connection with the same ID. Close the new one immediately with a PolicyViolation.
-	if _, exists := server.connections[id]; exists {
+	if existingWs, exists := server.connections[id]; exists {
 		server.connMutex.Unlock()
 		server.error(fmt.Errorf("client %s already exists, closing duplicate client", id))
+		// new connection closes with PolicyViolation
 		_ = conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
 			time.Now().Add(server.timeoutConfig.WriteWait))
 		_ = conn.Close()
+
+		// cleans existing connection
+		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "a connection with this ID already exists"),
+			time.Now().Add(server.timeoutConfig.WriteWait))
+		_ = existingWs.connection.Close()
+
 		return
 	}
 	// Add new client

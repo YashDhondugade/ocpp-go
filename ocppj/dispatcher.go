@@ -469,9 +469,11 @@ func (d *DefaultServerDispatcher) SendRequest(clientID string, req RequestBundle
 	if err := q.Push(req); err != nil {
 		return err
 	}
+	log.Infof("[ServerDispatcher]ESP SendRequest: Acquire lock", req.Call.UniqueId)
 	d.mutex.RLock()
 	d.requestChannel <- clientID
 	d.mutex.RUnlock()
+	log.Infof("[ServerDispatcher] ESP SendRequest: Released lock", req.Call.UniqueId)
 	return nil
 }
 
