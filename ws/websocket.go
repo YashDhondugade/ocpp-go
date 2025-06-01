@@ -543,26 +543,47 @@ out:
 	// Check whether client exists
 	if existingWsInterface, exists := server.connections.Load(id); exists {
 		existingWs := existingWsInterface.(*WebSocket)
-		log.Debugf("client %s already exists, closing duplicate new client", id)
-		server.error(fmt.Errorf("client %s already exists, closing duplicate client", id))
+		log.Debugf("[ESP-WS] Client %s already exists, handling duplicate connection", id)
+
+		// Clean up the existing connection
+		log.Debugf("[ESP-WS] Cleaning up existing connection for %s", id)
+
 		// new connection closes with PolicyViolation
+		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
+			time.Now().Add(server.timeoutConfig.WriteWait))
+		_ = existingWs.connection.Close()
+		server.cleanupConnection(existingWs)
+
+
+		// Create temporary WebSocket for the new connection to clean it up properly
+		newWs := WebSocket{
+			connection:         conn,
+			id:                 id,
+			outQueue:           make(chan []byte, 1),
+			closeC:             make(chan websocket.CloseError, 1),
+			forceCloseC:        make(chan error, 1),
+			pingMessage:        make(chan []byte, 1),
+			tlsConnectionState: r.TLS,
+		}
+		log.Debugf("[ESP-WS] Cleaning up new connection for %s", id)
 		_ = conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
 			time.Now().Add(server.timeoutConfig.WriteWait))
-		_ = conn.Close()
+		_ = newWs.connection.Close()
 
-		log.Debugf("closing existing connection for %s", id)
-		// cleans existing connection
-		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "a connection with this ID already exists"),
-			time.Now().Add(server.timeoutConfig.WriteWait))
-		_ = existingWs.connection.Close()
+		// Clean up the new connection
+		server.cleanupConnection(&newWs)
 
+		log.Debugf("[ESP-WS] Both connections cleaned up for %s", id)
 		return
 	}
 	// Add new client
+	log.Debugf("[ESP-WS] Storing new connection for %s in sync.Map", id)
 	server.connections.Store(ws.id, &ws)
-	// Read and write routines are started in separate goroutines and function will return immediately
+
+	// Read and write routines are started in separate goroutines
+	log.Debugf("[ESP-WS] Starting read/write pumps for %s", id)
 	go server.writePump(&ws)
 	go server.readPump(&ws)
 	if server.newClientHandler != nil {
@@ -580,13 +601,18 @@ func (server *Server) getReadTimeout() time.Time {
 
 func (server *Server) readPump(ws *WebSocket) {
 	conn := ws.connection
+	log.Debugf("[ESP-WS] Starting readPump for %s", ws.ID())
 
 	conn.SetPingHandler(func(appData string) error {
-		log.Debugf("ping received from %s", ws.ID())
+		log.Debugf("[ESP-WS] Ping received from %s", ws.ID())
 		ws.pingMessage <- []byte(appData)
 		err := conn.SetReadDeadline(server.getReadTimeout())
+		if err != nil {
+			log.Debugf("[ESP-WS] Error setting read deadline for %s: %v", ws.ID(), err)
+		}
 		return err
 	})
+
 	_ = conn.SetReadDeadline(server.getReadTimeout())
 
 	for {
@@ -595,16 +621,16 @@ func (server *Server) readPump(ws *WebSocket) {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
 				server.error(fmt.Errorf("read failed unexpectedly for %s: %w", ws.ID(), err))
 			}
-			log.Debugf("handling read error for %s: %v", ws.ID(), err.Error())
-			// Notify writePump of error. Force close will be handled there
+			log.Debugf("[ESP-WS] Read error for %s: %v", ws.ID(), err.Error())
 			ws.forceCloseC <- err
+			log.Debugf("[ESP-WS] Sent force close signal for %s", ws.ID())
 			return
 		}
 
+		log.Debugf("[ESP-WS] Received message of length %d for %s", len(message), ws.ID())
 		if server.messageHandler != nil {
-			var channel Channel = ws
-			err = server.messageHandler(channel, message)
-			if err != nil {
+			if err := server.messageHandler(ws, message); err != nil {
+				log.Debugf("[ESP-WS] Message handler error for %s: %v", ws.ID(), err)
 				server.error(fmt.Errorf("handling failed for %s: %w", ws.ID(), err))
 				continue
 			}
@@ -614,55 +640,40 @@ func (server *Server) readPump(ws *WebSocket) {
 }
 
 func (server *Server) writePump(ws *WebSocket) {
+	log.Debugf("[ESP-WS] Starting writePump for %s", ws.ID())
 	conn := ws.connection
 
 	for {
 		select {
 		case data, ok := <-ws.outQueue:
-			_ = conn.SetWriteDeadline(time.Now().Add(server.timeoutConfig.WriteWait))
 			if !ok {
-				// Unexpected closed queue, should never happen
-				server.error(fmt.Errorf("output queue for socket %v was closed, forcefully closing", ws.id))
-				// Don't invoke cleanup
+				log.Debugf("[ESP-WS] Output queue closed for %s", ws.ID())
 				return
 			}
-			// Send data
-			err := conn.WriteMessage(websocket.TextMessage, data)
-			if err != nil {
-				server.error(fmt.Errorf("write failed for %s: %w", ws.ID(), err))
-				// Invoking cleanup, as socket was forcefully closed
-				server.cleanupConnection(ws)
-				return
-			}
-			log.Debugf("written %d bytes to %s", len(data), ws.ID())
-		case ping := <-ws.pingMessage:
+			log.Debugf("[ESP-WS] Writing %d bytes to %s", len(data), ws.ID())
 			_ = conn.SetWriteDeadline(time.Now().Add(server.timeoutConfig.WriteWait))
-			err := conn.WriteMessage(websocket.PongMessage, ping)
-			if err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				log.Debugf("[ESP-WS] Write error for %s: %v", ws.ID(), err)
 				server.error(fmt.Errorf("write failed for %s: %w", ws.ID(), err))
-				// Invoking cleanup, as socket was forcefully closed
 				server.cleanupConnection(ws)
 				return
 			}
-			log.Debugf("pong sent to %s", ws.ID())
 		case closeErr := <-ws.closeC:
-			log.Debugf("closing connection to %s", ws.ID())
-			// Closing connection gracefully
+			log.Debugf("[ESP-WS] Received close signal for %s", ws.ID())
 			if err := conn.WriteControl(
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(closeErr.Code, closeErr.Text),
 				time.Now().Add(server.timeoutConfig.WriteWait),
 			); err != nil {
-				server.error(fmt.Errorf("failed to write close message for connection %s: %w", ws.id, err))
+				log.Debugf("[ESP-WS] Error sending close message for %s: %v", ws.ID(), err)
 			}
-			// Invoking cleanup
-			log.Debugf("invoking cleanup for %s", ws.ID())
+			log.Debugf("[ESP-WS] Invoking cleanup after close signal for %s", ws.ID())
 			server.cleanupConnection(ws)
 			return
 		case closed, ok := <-ws.forceCloseC:
+			log.Debugf("[ESP-WS] Force close signal received for %s (ok=%v, err=%v)", ws.ID(), ok, closed)
 			if !ok || closed != nil {
-				// Connection was forcefully closed, invoke cleanup
-				log.Debugf("handling forced close signal for %s", ws.ID())
+				log.Debugf("[ESP-WS] Invoking cleanup after force close for %s", ws.ID())
 				server.cleanupConnection(ws)
 			}
 			return
@@ -673,17 +684,23 @@ func (server *Server) writePump(ws *WebSocket) {
 // Frees internal resources after a websocket connection was signaled to be closed.
 // From this moment onwards, no new messages may be sent.
 func (server *Server) cleanupConnection(ws *WebSocket) {
-	log.Infof("closing connection to %s", ws.ID())
-	server.connections.Delete(ws.id)
+	log.Debugf("[ESP-WS] Starting cleanup for connection %s", ws.ID())
 
-	_ = ws.connection.Close()
+	log.Debugf("[ESP-WS] Closing connection for %s", ws.ID())
+	if err := ws.connection.Close(); err != nil {
+		log.Debugf("[ESP-WS] Error closing connection for %s: %v", ws.ID(), err)
+	}
+
+	log.Debugf("[ESP-WS] Closing channels for %s", ws.ID())
 	close(ws.outQueue)
 	close(ws.closeC)
-	//log.Infof("deleting connection from map for %s", ws.ID())
 
-	//server.connections.Delete(ws.id)
-	log.Infof("deleted connection to %s", ws.ID())
+	log.Debugf("[ESP-WS] Removing connection %s from sync.Map", ws.ID())
+	server.connections.Delete(ws.id)
+
+	log.Debugf("[ESP-WS] Cleanup completed for %s", ws.ID())
 	if server.disconnectedHandler != nil {
+		log.Debugf("[ESP-WS] Calling disconnectedHandler for %s", ws.ID())
 		server.disconnectedHandler(ws)
 	}
 }
