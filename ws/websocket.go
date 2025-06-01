@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"path"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -129,6 +130,8 @@ type WebSocket struct {
 	forceCloseC        chan error                // used by the readPump to notify a forcefully closed connection to the writePump.
 	pingMessage        chan []byte
 	tlsConnectionState *tls.ConnectionState
+	cleanupOnce        sync.Once   // ensures cleanup only happens once
+	isClosed           atomic.Bool // atomic flag to track if connection is closed
 }
 
 // Retrieves the unique Identifier of the websocket (typically, the URL suffix).
@@ -536,6 +539,7 @@ out:
 		forceCloseC:        make(chan error, 1),
 		pingMessage:        make(chan []byte, 1),
 		tlsConnectionState: r.TLS,
+		isClosed:           atomic.Bool{},
 	}
 	log.Debugf("upgraded websocket connection for %s from %s", id, conn.RemoteAddr().String())
 	// If unsupported subprotocol, terminate the connection immediately
@@ -547,16 +551,29 @@ out:
 		_ = conn.Close()
 		return
 	}
-	// Check whether client exists
 	server.connMutex.Lock()
-	// There is already a connection with the same ID. Close the new one immediately with a PolicyViolation.
-	if _, exists := server.connections[id]; exists {
+	// Check whether client exists
+	if existingWsInterface, exists := server.connections.Load(id); exists {
 		server.connMutex.Unlock()
-		server.error(fmt.Errorf("client %s already exists, closing duplicate client", id))
+
+		existingWs := existingWsInterface.(*WebSocket)
+		log.Debugf("[ESP-WS] Client %s already exists, handling duplicate connection", id)
+
+		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
+			time.Now().Add(server.timeoutConfig.WriteWait))
+		_ = existingWs.connection.Close()
+
+		// Clean up the existing connection
+		log.Debugf("[ESP-WS] Cleaning up existing connection for %s", id)
+		server.cleanupConnection(existingWs)
+
 		_ = conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
 			time.Now().Add(server.timeoutConfig.WriteWait))
 		_ = conn.Close()
+
+		log.Debugf("[ESP-WS] Both connections cleaned up for %s", id)
 		return
 	}
 	// Add new client
@@ -672,16 +689,55 @@ func (server *Server) writePump(ws *WebSocket) {
 // Frees internal resources after a websocket connection was signaled to be closed.
 // From this moment onwards, no new messages may be sent.
 func (server *Server) cleanupConnection(ws *WebSocket) {
-	_ = ws.connection.Close()
-	server.connMutex.Lock()
-	close(ws.outQueue)
-	close(ws.closeC)
-	delete(server.connections, ws.id)
-	server.connMutex.Unlock()
-	log.Infof("closed connection to %s", ws.ID())
-	if server.disconnectedHandler != nil {
-		server.disconnectedHandler(ws)
-	}
+	ws.cleanupOnce.Do(func() {
+		log.Debugf("[ESP-WS] Starting cleanup for connection %s", ws.ID())
+
+		// Set closed flag first to prevent any new operations
+		ws.isClosed.Store(true)
+		_ = ws.connection.Close()
+
+		server.connMutex.Lock()
+
+		// Remove from map to prevent new operations
+		log.Debugf("[ESP-WS] Removing connection %s from sync.Map", ws.ID())
+		delete(server.connections, ws.id)
+		server.connMutex.Unlock()
+
+		// Close the physical connection
+		log.Debugf("[ESP-WS] Closing connection for %s", ws.ID())
+		if err := ws.connection.Close(); err != nil {
+			log.Debugf("[ESP-WS] Error closing connection for %s: %v", ws.ID(), err)
+		}
+
+		// Safely close channels using recover to prevent panic on already closed channels
+		log.Debugf("[ESP-WS] Safely closing channels for %s", ws.ID())
+		safeClose := func(ch interface{}) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Debugf("[ESP-WS] Channel already closed for %s", ws.ID())
+				}
+			}()
+			switch c := ch.(type) {
+			case chan []byte:
+				close(c)
+			case chan websocket.CloseError:
+				close(c)
+			case chan error:
+				close(c)
+			}
+		}
+
+		safeClose(ws.outQueue)
+		safeClose(ws.closeC)
+		safeClose(ws.forceCloseC)
+		safeClose(ws.pingMessage)
+
+		log.Debugf("[ESP-WS] Cleanup completed for %s", ws.ID())
+		if server.disconnectedHandler != nil {
+			log.Debugf("[ESP-WS] Calling disconnectedHandler for %s", ws.ID())
+			server.disconnectedHandler(ws)
+		}
+	})
 }
 
 // ---------------------- CLIENT ----------------------
