@@ -656,6 +656,7 @@ func (server *Server) writePump(ws *WebSocket) {
 				server.error(fmt.Errorf("failed to write close message for connection %s: %w", ws.id, err))
 			}
 			// Invoking cleanup
+			log.Debugf("invoking cleanup for %s", ws.ID())
 			server.cleanupConnection(ws)
 			return
 		case closed, ok := <-ws.forceCloseC:
@@ -672,11 +673,16 @@ func (server *Server) writePump(ws *WebSocket) {
 // Frees internal resources after a websocket connection was signaled to be closed.
 // From this moment onwards, no new messages may be sent.
 func (server *Server) cleanupConnection(ws *WebSocket) {
+	log.Infof("closing connection to %s", ws.ID())
+	server.connections.Delete(ws.id)
+
 	_ = ws.connection.Close()
 	close(ws.outQueue)
 	close(ws.closeC)
-	server.connections.Delete(ws.id)
-	log.Infof("closed connection to %s", ws.ID())
+	//log.Infof("deleting connection from map for %s", ws.ID())
+
+	//server.connections.Delete(ws.id)
+	log.Infof("deleted connection to %s", ws.ID())
 	if server.disconnectedHandler != nil {
 		server.disconnectedHandler(ws)
 	}
