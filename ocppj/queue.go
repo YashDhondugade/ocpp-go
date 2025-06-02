@@ -32,6 +32,8 @@ type RequestQueue interface {
 	IsFull() bool
 	// IsEmpty returns true if the queue is currently empty, false otherwise.
 	IsEmpty() bool
+	// CheckHealth returns a string with diagnostic information about the queue's current state
+	CheckHealth() string
 }
 
 // FIFOClientQueue is a default queue implementation. The queue is thread-safe.
@@ -97,6 +99,15 @@ func (q *FIFOClientQueue) IsEmpty() bool {
 	return len(q.elements) == 0
 }
 
+// CheckHealth returns diagnostic information about the queue's current state
+func (q *FIFOClientQueue) CheckHealth() string {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	return fmt.Sprintf("FIFOClientQueue: size=%d, capacity=%d, isFull=%v, isEmpty=%v",
+		len(q.elements), q.capacity, len(q.elements) >= q.capacity && q.capacity > 0, len(q.elements) == 0)
+}
+
 // NewFIFOClientQueue creates a new FIFOClientQueue with the given capacity.
 //
 // A FIFOQueue is backed by a slice, and the capacity represents the maximum capacity of the queue.
@@ -127,6 +138,8 @@ type ServerQueueMap interface {
 	// Add inserts a new RequestQueue into the map structure.
 	// If such element already exists, it will be replaced with the new queue.
 	Add(clientID string, queue RequestQueue)
+	// CheckHealth returns a string with diagnostic information about the queue map's current state
+	CheckHealth() string
 }
 
 // FIFOQueueMap is a default implementation of ServerQueueMap.
@@ -174,6 +187,20 @@ func (f *FIFOQueueMap) Add(clientID string, queue RequestQueue) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 	f.data[clientID] = queue
+}
+
+// CheckHealth returns diagnostic information about the queue map's current state
+func (f *FIFOQueueMap) CheckHealth() string {
+	f.mutex.RLock()
+	defer f.mutex.RUnlock()
+
+	clientInfo := ""
+	for clientID, queue := range f.data {
+		clientInfo += fmt.Sprintf("\n  - Client %s: %s", clientID, queue.CheckHealth())
+	}
+
+	return fmt.Sprintf("FIFOQueueMap: clientCount=%d, queueCapacity=%d%s",
+		len(f.data), f.queueCapacity, clientInfo)
 }
 
 // NewFIFOQueueMap creates a new FIFOQueueMap, which will automatically create queues with the specified capacity.
