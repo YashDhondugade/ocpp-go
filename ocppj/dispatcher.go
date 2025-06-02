@@ -74,6 +74,8 @@ type ClientDispatcher interface {
 	// If there was a pending request before pausing the dispatcher, a response/timeout
 	// for this request shall be awaited anew.
 	Resume()
+	// CheckHealth returns a string with diagnostic information about the dispatcher's current state
+	CheckHealth() string
 }
 
 // pendingRequest is used internally for associating metadata to a pending Request.
@@ -295,6 +297,20 @@ func (d *DefaultClientDispatcher) CompleteRequest(requestId string) {
 	d.readyForDispatch <- true
 }
 
+// CheckHealth returns diagnostic information about the dispatcher's current state
+func (d *DefaultClientDispatcher) CheckHealth() string {
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
+
+	queueHealth := "no queue"
+	if d.requestQueue != nil {
+		queueHealth = d.requestQueue.CheckHealth()
+	}
+
+	return fmt.Sprintf("DefaultClientDispatcher: running=%v, paused=%v, timeout=%v, queue=%s",
+		d.requestChannel != nil, d.paused, d.timeout, queueHealth)
+}
+
 // ServerDispatcher contains the state and logic for handling outgoing messages on a server endpoint.
 // This allows the ocpp-j layer to delegate queueing and processing logic to an external entity.
 //
@@ -359,6 +375,8 @@ type ServerDispatcher interface {
 	// Undelivered pending requests are also cleared.
 	// The OnRequestCanceled callback will be invoked for each discarded request.
 	DeleteClient(clientID string)
+	// CheckHealth returns a string with diagnostic information about the dispatcher's current state
+	CheckHealth() string
 }
 
 // DefaultServerDispatcher is a default implementation of the ServerDispatcher interface.
@@ -663,4 +681,18 @@ func (d *DefaultServerDispatcher) CompleteRequest(clientID string, requestID str
 	log.Debugf("completed request %s for %s", callID, clientID)
 	// Signal that next message in queue may be sent
 	d.readyForDispatch <- clientID
+}
+
+// CheckHealth returns diagnostic information about the dispatcher's current state
+func (d *DefaultServerDispatcher) CheckHealth() string {
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
+
+	queueMapHealth := "no queue map"
+	if d.queueMap != nil {
+		queueMapHealth = d.queueMap.CheckHealth()
+	}
+
+	return fmt.Sprintf("DefaultServerDispatcher: running=%v, timeout=%v, queueMap=%s",
+		d.running, d.timeout, queueMapHealth)
 }
