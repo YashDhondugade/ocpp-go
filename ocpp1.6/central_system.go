@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/lorenzodonini/ocpp-go/internal/callbackqueue"
+	logger "github.com/lorenzodonini/ocpp-go/logging"
 	"github.com/lorenzodonini/ocpp-go/ocpp"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/certificates"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
@@ -21,7 +22,11 @@ import (
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
 	"github.com/lorenzodonini/ocpp-go/ocppj"
 	"github.com/lorenzodonini/ocpp-go/ws"
+	"github.com/sirupsen/logrus"
 )
+
+// The internal verbose logger
+var log logger.Logger = &logrus.Logger{}
 
 type centralSystem struct {
 	server                *ocppj.Server
@@ -537,12 +542,16 @@ func (cs *centralSystem) SendRequestAsync(clientId string, request ocpp.Request,
 }
 
 func (cs *centralSystem) Start(listenPort int, listenPath string) {
+	log.Infof("[CentralSystem] Starting central system on port %d, path %s", listenPort, listenPath)
 	// Start server
 	cs.server.Start(listenPort, listenPath)
+	log.Info("[CentralSystem] Started central system")
 }
 
 func (cs *centralSystem) Stop() {
+	log.Info("[CentralSystem] Stopping central system")
 	cs.server.Stop()
+	log.Info("[CentralSystem] Stopped central system")
 }
 
 func (cs *centralSystem) sendResponse(chargePointId string, confirmation ocpp.Response, err error, requestId string) {

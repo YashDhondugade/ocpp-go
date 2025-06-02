@@ -48,13 +48,21 @@ func NewClientState() ClientState {
 }
 
 func (s *clientState) AddPendingRequest(requestID string, req ocpp.Request) {
+	log.Debugf("[ClientState] AddPendingRequest: About to acquire lock for requestID %s", requestID)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	log.Debugf("[ClientState] AddPendingRequest: Acquired lock for requestID %s", requestID)
+	defer func() {
+		s.mutex.Unlock()
+		log.Debugf("[ClientState] AddPendingRequest: Released lock for requestID %s", requestID)
+	}()
 	if requestID != "" && s.requestID == "" {
 		s.requestID = requestID
 		s.pendingRequest = pendingRequest{
 			request: req,
 		}
+		log.Debugf("[ClientState] AddPendingRequest: Added pending request %s", requestID)
+	} else {
+		log.Debugf("[ClientState] AddPendingRequest: Ignored request %s (current: %s)", requestID, s.requestID)
 	}
 }
 
@@ -68,12 +76,19 @@ func (s *clientState) GetPendingRequest(requestID string) (ocpp.Request, bool) {
 }
 
 func (s *clientState) DeletePendingRequest(requestID string) {
+	log.Debugf("[ClientState] DeletePendingRequest: About to acquire lock for requestID %s", requestID)
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	log.Debugf("[ClientState] DeletePendingRequest: Acquired lock for requestID %s", requestID)
+	defer func() {
+		s.mutex.Unlock()
+		log.Debugf("[ClientState] DeletePendingRequest: Released lock for requestID %s", requestID)
+	}()
 	if s.requestID != requestID {
+		log.Debugf("[ClientState] DeletePendingRequest: Request ID mismatch, current: %s, requested: %s", s.requestID, requestID)
 		return
 	}
 	s.requestID = ""
+	log.Debugf("[ClientState] DeletePendingRequest: Deleted pending request %s", requestID)
 }
 
 func (s *clientState) ClearPendingRequests() {
@@ -146,17 +161,22 @@ func NewServerState(m *sync.RWMutex) ServerState {
 }
 
 func (d *serverState) AddPendingRequest(clientID string, requestID string, req ocpp.Request) {
+	log.Debugf("[ServerState] AddPendingRequest: Adding request %s for client %s", requestID, clientID)
 	state := d.getOrCreateState(clientID)
 	state.AddPendingRequest(requestID, req)
+	log.Debugf("[ServerState] AddPendingRequest: Added request %s for client %s", requestID, clientID)
 }
 
 func (d *serverState) DeletePendingRequest(clientID string, requestID string) {
+	log.Debugf("[ServerState] DeletePendingRequest: Deleting request %s for client %s", requestID, clientID)
 	stateVal, exists := d.pendingRequestState.Load(clientID)
 	if !exists {
+		log.Debugf("[ServerState] DeletePendingRequest: No state found for client %s", clientID)
 		return
 	}
 	state := stateVal.(ClientState)
 	state.DeletePendingRequest(requestID)
+	log.Debugf("[ServerState] DeletePendingRequest: Deleted request %s for client %s", requestID, clientID)
 }
 
 func (d *serverState) GetClientState(clientID string) ClientState {

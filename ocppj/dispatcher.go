@@ -125,11 +125,13 @@ func (d *DefaultClientDispatcher) SetTimeout(timeout time.Duration) {
 }
 
 func (d *DefaultClientDispatcher) Start() {
+	log.Info("[DefaultClientDispatcher] Starting dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.requestChannel = make(chan bool, 1)
 	d.timer = time.NewTimer(defaultTimeoutTick) // Default to 24 hours tick
 	go d.messagePump()
+	log.Info("[DefaultClientDispatcher] Started dispatcher")
 }
 
 func (d *DefaultClientDispatcher) IsRunning() bool {
@@ -145,10 +147,12 @@ func (d *DefaultClientDispatcher) IsPaused() bool {
 }
 
 func (d *DefaultClientDispatcher) Stop() {
+	log.Info("[DefaultClientDispatcher] Stopping dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	close(d.requestChannel)
 	// TODO: clear pending requests?
+	log.Info("[DefaultClientDispatcher] Stopped dispatcher")
 }
 
 func (d *DefaultClientDispatcher) SetNetworkClient(client ws.WsClient) {
@@ -166,17 +170,20 @@ func (d *DefaultClientDispatcher) SendRequest(req RequestBundle) error {
 	if err := d.requestQueue.Push(req); err != nil {
 		return err
 	}
-	log.Infof("ESP SendRequest: Acquire lock", req.Call.UniqueId)
+	log.Infof("[DefaultClientDispatcher] ESP SendRequest: About to acquire lock for %s", req.Call.UniqueId)
 	d.mutex.RLock()
+	log.Infof("[DefaultClientDispatcher] ESP SendRequest: Acquired lock, about to write to channel for %s", req.Call.UniqueId)
 	d.requestChannel <- true
-	log.Infof("ESP SendRequest: wrote to channel", req.Call.UniqueId)
+	log.Infof("[DefaultClientDispatcher] ESP SendRequest: Wrote to channel, about to release lock for %s", req.Call.UniqueId)
 	d.mutex.RUnlock()
-	log.Infof("ESP SendRequest: Released lock", req.Call.UniqueId)
+	log.Infof("[DefaultClientDispatcher] ESP SendRequest: Released lock for %s", req.Call.UniqueId)
 
 	return nil
 }
 
 func (d *DefaultClientDispatcher) messagePump() {
+	log.Info("[DefaultClientDispatcher] messagePump started")
+	defer log.Info("[DefaultClientDispatcher] messagePump exiting")
 	rdy := true // Ready to transmit at the beginning
 
 	reqChan := func() chan bool {
@@ -186,10 +193,13 @@ func (d *DefaultClientDispatcher) messagePump() {
 	}
 
 	for {
+		log.Debug("[DefaultClientDispatcher] messagePump: waiting for events")
 		select {
 		case _, ok := <-reqChan():
 			// New request was posted
+			log.Debugf("[DefaultClientDispatcher] messagePump: received request channel event, ok=%v", ok)
 			if !ok {
+				log.Info("[DefaultClientDispatcher] messagePump: request channel closed, cleaning up")
 				d.requestQueue.Init()
 				d.mutex.Lock()
 				d.requestChannel = nil
@@ -198,6 +208,7 @@ func (d *DefaultClientDispatcher) messagePump() {
 			}
 		case _, ok := <-d.timer.C:
 			// Timeout elapsed
+			log.Debugf("[DefaultClientDispatcher] messagePump: received timer event, ok=%v", ok)
 			if !ok {
 				continue
 			}
@@ -215,6 +226,7 @@ func (d *DefaultClientDispatcher) messagePump() {
 			d.timer.Reset(defaultTimeoutTick)
 		case rdy = <-d.readyForDispatch:
 			// Ready flag set, keep going
+			log.Debugf("[DefaultClientDispatcher] messagePump: received ready for dispatch, rdy=%v", rdy)
 		}
 
 		// Check if dispatcher is paused
@@ -423,6 +435,7 @@ func NewDefaultServerDispatcher(queueMap ServerQueueMap) *DefaultServerDispatche
 }
 
 func (d *DefaultServerDispatcher) Start() {
+	log.Info("[DefaultServerDispatcher] Starting dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.requestChannel = make(chan string, 20)
@@ -430,6 +443,7 @@ func (d *DefaultServerDispatcher) Start() {
 	d.stoppedC = make(chan struct{}, 1)
 	d.running = true
 	go d.messagePump()
+	log.Info("[DefaultServerDispatcher] Started dispatcher")
 }
 
 func (d *DefaultServerDispatcher) IsRunning() bool {
@@ -439,10 +453,12 @@ func (d *DefaultServerDispatcher) IsRunning() bool {
 }
 
 func (d *DefaultServerDispatcher) Stop() {
+	log.Info("[DefaultServerDispatcher] Stopping dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.running = false
 	close(d.stoppedC)
+	log.Info("[DefaultServerDispatcher] Stopped dispatcher")
 }
 
 func (d *DefaultServerDispatcher) SetTimeout(timeout time.Duration) {
@@ -456,10 +472,13 @@ func (d *DefaultServerDispatcher) CreateClient(clientID string) {
 }
 
 func (d *DefaultServerDispatcher) DeleteClient(clientID string) {
+	log.Infof("[DefaultServerDispatcher] DeleteClient: removing client %s", clientID)
 	d.queueMap.Remove(clientID)
 	if d.IsRunning() {
+		log.Debugf("[DefaultServerDispatcher] DeleteClient: about to acquire lock and notify channel for client %s", clientID)
 		d.mutex.RLock()
 		d.requestChannel <- clientID
+		log.Debugf("[DefaultServerDispatcher] DeleteClient: wrote to channel, releasing lock for client %s", clientID)
 		d.mutex.RUnlock()
 	}
 }
@@ -487,17 +506,21 @@ func (d *DefaultServerDispatcher) SendRequest(clientID string, req RequestBundle
 	if err := q.Push(req); err != nil {
 		return err
 	}
-	log.Infof("[ServerDispatcher]ESP SendRequest: Acquire lock", req.Call.UniqueId)
+	log.Infof("[DefaultServerDispatcher] ESP SendRequest: About to acquire lock for %s (client: %s)", req.Call.UniqueId, clientID)
 	d.mutex.RLock()
+	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Acquired lock, about to write to channel for %s (client: %s)", req.Call.UniqueId, clientID)
 	d.requestChannel <- clientID
+	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Wrote to channel, about to release lock for %s (client: %s)", req.Call.UniqueId, clientID)
 	d.mutex.RUnlock()
-	log.Infof("[ServerDispatcher] ESP SendRequest: Released lock", req.Call.UniqueId)
+	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Released lock for %s (client: %s)", req.Call.UniqueId, clientID)
 	return nil
 }
 
 // requestPump processes new outgoing requests for each client and makes sure they are processed sequentially.
 // This method is executed by a dedicated coroutine as soon as the server is started and runs indefinitely.
 func (d *DefaultServerDispatcher) messagePump() {
+	log.Info("[DefaultServerDispatcher] messagePump started")
+	defer log.Info("[DefaultServerDispatcher] messagePump exiting")
 	var clientID string
 	var ok bool
 	var rdy bool
@@ -513,14 +536,17 @@ func (d *DefaultServerDispatcher) messagePump() {
 
 	// Dispatcher Loop
 	for {
+		log.Debug("[DefaultServerDispatcher] messagePump: waiting for events")
 		select {
 		case <-d.stoppedC:
 			// Server was stopped
+			log.Info("[DefaultServerDispatcher] messagePump: received stop signal")
 			d.queueMap.Init()
 			log.Info("stopped processing requests")
 			return
 		case clientID = <-reqChan():
 			// Check whether there is a request queue for the specified client
+			log.Debugf("[DefaultServerDispatcher] messagePump: received request for client %s", clientID)
 			clientQueue, ok = d.queueMap.Get(clientID)
 			if !ok {
 				// No client queue found (client was removed)
@@ -543,6 +569,7 @@ func (d *DefaultServerDispatcher) messagePump() {
 			}
 		case clientID, ok = <-d.timerC:
 			// Timeout elapsed
+			log.Debugf("[DefaultServerDispatcher] messagePump: received timeout for client %s, ok=%v", clientID, ok)
 			if !ok {
 				continue
 			}
@@ -577,6 +604,7 @@ func (d *DefaultServerDispatcher) messagePump() {
 			}
 		case clientID = <-d.readyForDispatch:
 			// Cancel previous timeout (if any)
+			log.Debugf("[DefaultServerDispatcher] messagePump: received ready for dispatch for client %s", clientID)
 			clientCtx, ok = clientContextMap[clientID]
 			if ok && clientCtx.isActive() {
 				clientCtx.cancel()
@@ -680,7 +708,9 @@ func (d *DefaultServerDispatcher) CompleteRequest(clientID string, requestID str
 	d.pendingRequestState.DeletePendingRequest(clientID, requestID)
 	log.Debugf("completed request %s for %s", callID, clientID)
 	// Signal that next message in queue may be sent
+	log.Debugf("[DefaultServerDispatcher] CompleteRequest: about to write to readyForDispatch for client %s", clientID)
 	d.readyForDispatch <- clientID
+	log.Debugf("[DefaultServerDispatcher] CompleteRequest: wrote to readyForDispatch for client %s", clientID)
 }
 
 // CheckHealth returns diagnostic information about the dispatcher's current state
