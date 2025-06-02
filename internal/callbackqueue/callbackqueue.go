@@ -1,6 +1,7 @@
 package callbackqueue
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/lorenzodonini/ocpp-go/ocpp"
@@ -59,4 +60,24 @@ func (cq *CallbackQueue) Dequeue(id string) (func(confirmation ocpp.Response, er
 	}
 
 	return callback, ok
+}
+
+// CheckHealth returns diagnostic information about the callback queue's current state
+func (cq *CallbackQueue) CheckHealth() string {
+	cq.callbacksMutex.RLock()
+	defer cq.callbacksMutex.RUnlock()
+
+	totalCallbacks := 0
+	clientDetails := ""
+
+	for clientID, callbacks := range cq.callbacks {
+		count := len(callbacks)
+		totalCallbacks += count
+		if count > 0 {
+			clientDetails += fmt.Sprintf("\n    - Client %s: %d pending", clientID, count)
+		}
+	}
+
+	return fmt.Sprintf("CallbackQueue: totalPending=%d, clientCount=%d%s",
+		totalCallbacks, len(cq.callbacks), clientDetails)
 }
