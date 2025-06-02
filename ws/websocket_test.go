@@ -492,7 +492,8 @@ func TestWebsocketServerConnectionBreak(t *testing.T) {
 	wsServer := newWebsocketServer(t, nil)
 	wsServer.SetNewClientHandler(func(ws Channel) {
 		assert.NotNil(t, ws)
-		conn := wsServer.connections[ws.ID()]
+		connAnyType, _ := wsServer.connections.Load(ws.ID())
+		conn := connAnyType.(*WebSocket)
 		assert.NotNil(t, conn)
 		// Simulate connection closed as soon client is connected
 		err := conn.connection.Close()
@@ -1097,7 +1098,8 @@ func TestClientErrors(t *testing.T) {
 	r = <-triggerC
 	assert.True(t, r)
 	// Send unexpected close message and wait for error to be thrown
-	conn := wsServer.connections[path.Base(testPath)]
+	connAnyType, _ := wsServer.connections.Load(path.Base(testPath))
+	conn := connAnyType.(*WebSocket)
 	require.NotNil(t, conn)
 	err = conn.connection.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, ""))
 	assert.NoError(t, err)
