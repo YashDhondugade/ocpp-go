@@ -302,12 +302,12 @@ func (d *DefaultClientDispatcher) CheckHealth() string {
 	d.mutex.RLock()
 	defer d.mutex.RUnlock()
 
-	queueHealth := "no queue"
+	queueHealth := `"no queue"`
 	if d.requestQueue != nil {
 		queueHealth = d.requestQueue.CheckHealth()
 	}
 
-	return fmt.Sprintf("DefaultClientDispatcher: running=%v, paused=%v, timeout=%v, queue=%s",
+	return fmt.Sprintf(`{"component":"DefaultClientDispatcher","running":%v,"paused":%v,"timeout":"%v","queue":%s}`,
 		d.requestChannel != nil, d.paused, d.timeout, queueHealth)
 }
 
@@ -686,11 +686,11 @@ func (d *DefaultServerDispatcher) CheckHealth() string {
 	d.mutex.RLock()
 	defer d.mutex.RUnlock()
 
-	queueMapHealth := "no queue map"
+	queueMapHealth := `"no queue map"`
 	if d.queueMap != nil {
 		queueMapHealth = d.queueMap.CheckHealth()
 	}
 
-	return fmt.Sprintf("DefaultServerDispatcher: running=%v, timeout=%v, queueMap=%s",
+	return fmt.Sprintf(`{"component":"DefaultServerDispatcher","running":%v,"timeout":"%v","queueMap":%s}`,
 		d.running, d.timeout, queueMapHealth)
 }

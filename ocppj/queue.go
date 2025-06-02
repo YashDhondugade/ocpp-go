@@ -1,6 +1,7 @@
 package ocppj
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 )
@@ -104,7 +105,7 @@ func (q *FIFOClientQueue) CheckHealth() string {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
 
-	return fmt.Sprintf("FIFOClientQueue: size=%d, capacity=%d, isFull=%v, isEmpty=%v",
+	return fmt.Sprintf(`{"component":"FIFOClientQueue","size":%d,"capacity":%d,"isFull":%v,"isEmpty":%v}`,
 		len(q.elements), q.capacity, len(q.elements) >= q.capacity && q.capacity > 0, len(q.elements) == 0)
 }
 
@@ -194,13 +195,15 @@ func (f *FIFOQueueMap) CheckHealth() string {
 	f.mutex.RLock()
 	defer f.mutex.RUnlock()
 
-	clientInfo := ""
+	clientQueues := make(map[string]json.RawMessage)
 	for clientID, queue := range f.data {
-		clientInfo += fmt.Sprintf("\n  - Client %s: %s", clientID, queue.CheckHealth())
+		clientQueues[clientID] = json.RawMessage(queue.CheckHealth())
 	}
 
-	return fmt.Sprintf("FIFOQueueMap: clientCount=%d, queueCapacity=%d%s",
-		len(f.data), f.queueCapacity, clientInfo)
+	clientQueuesJSON, _ := json.Marshal(clientQueues)
+
+	return fmt.Sprintf(`{"component":"FIFOQueueMap","clientCount":%d,"queueCapacity":%d,"clients":%s}`,
+		len(f.data), f.queueCapacity, string(clientQueuesJSON))
 }
 
 // NewFIFOQueueMap creates a new FIFOQueueMap, which will automatically create queues with the specified capacity.
