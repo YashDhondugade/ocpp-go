@@ -129,6 +129,7 @@ func (s *Server) SetDisconnectedClientHandler(handler ClientHandler) {
 //
 // An error may be returned, if the websocket server couldn't be started.
 func (s *Server) Start(listenPort int, listenPath string) {
+	log.Infof("[Server] Starting server on port %d, path %s", listenPort, listenPath)
 	// Set internal message handler
 	s.server.SetCheckClientHandler(s.checkClientHandler)
 	s.server.SetNewClientHandler(s.onClientConnected)
@@ -138,13 +139,16 @@ func (s *Server) Start(listenPort int, listenPath string) {
 	// Serve & run
 	s.server.Start(listenPort, listenPath)
 	// TODO: return error?
+	log.Info("[Server] Started server")
 }
 
 // Stops the server.
 // This clears all pending requests and causes the Start function to return.
 func (s *Server) Stop() {
+	log.Info("[Server] Stopping server")
 	s.dispatcher.Stop()
 	s.server.Stop()
+	log.Info("[Server] Stopped server")
 }
 
 // Sends an OCPP Request to a client, identified by the clientID parameter.
@@ -321,15 +325,18 @@ func (s *Server) HandleFailedResponseError(clientID string, requestID string, er
 }
 
 func (s *Server) onClientConnected(ws ws.Channel) {
+	log.Infof("[Server] Client connected: %s", ws.ID())
 	// Create state for connected client
 	s.dispatcher.CreateClient(ws.ID())
 	// Invoke callback
 	if s.newClientHandler != nil {
 		s.newClientHandler(ws)
 	}
+	log.Infof("[Server] Client connection setup completed: %s", ws.ID())
 }
 
 func (s *Server) onClientDisconnected(ws ws.Channel) {
+	log.Infof("[Server] Client disconnected: %s", ws.ID())
 	// Clear state for disconnected client
 	s.dispatcher.DeleteClient(ws.ID())
 	s.RequestState.ClearClientPendingRequest(ws.ID())
@@ -337,6 +344,7 @@ func (s *Server) onClientDisconnected(ws ws.Channel) {
 	if s.disconnectedClientHandler != nil {
 		s.disconnectedClientHandler(ws)
 	}
+	log.Infof("[Server] Client disconnection cleanup completed: %s", ws.ID())
 }
 
 // CheckHealth returns comprehensive diagnostic information about the server's current state

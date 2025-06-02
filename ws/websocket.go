@@ -406,15 +406,16 @@ func (server *Server) Connections(websocketId string) *WebSocket {
 
 // CheckHealth returns diagnostic information about the server's current state
 func (server *Server) CheckHealth() string {
+	server.connMutex.Lock()
+	defer server.connMutex.Unlock()
+
 	connectionCount := 0
 	connections := []string{}
 
-	server.connections.Range(func(key, value interface{}) bool {
+	for _, ws := range server.connections {
 		connectionCount++
-		ws := value.(*WebSocket)
 		connections = append(connections, ws.CheckHealth())
-		return true
-	})
+	}
 
 	addrInfo := "not listening"
 	if server.addr != nil {
@@ -422,8 +423,8 @@ func (server *Server) CheckHealth() string {
 	}
 
 	return fmt.Sprintf(`{"component":"WsServer","connections":%d,"address":"%s","writeWait":"%v","pingWait":"%v","connectionDetails":%s}`,
-		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait, 
-		"[" + strings.Join(connections, ",") + "]")
+		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait,
+		"["+strings.Join(connections, ",")+"]")
 }
 
 func (server *Server) AddHttpHandler(listenPath string, handler func(w http.ResponseWriter, r *http.Request)) {
@@ -595,10 +596,9 @@ out:
 	}
 	server.connMutex.Lock()
 	// Check whether client exists
-	if existingWsInterface, exists := server.connections.Load(id); exists {
+	if existingWs, exists := server.connections[id]; exists {
 		server.connMutex.Unlock()
 
-		existingWs := existingWsInterface.(*WebSocket)
 		log.Debugf("[ESP-WS] Client %s already exists, handling duplicate connection", id)
 
 		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
@@ -1036,47 +1036,54 @@ func (client *Client) writePump() {
 	}
 
 	for {
+		log.Debug("[WsClient] writePump: Waiting for events")
 		select {
 		case data := <-client.webSocket.outQueue:
 			// Send data
-			log.Debugf("sending data")
+			log.Debugf("[WsClient] Sending %d bytes for %s", len(data), client.webSocket.id)
 			_ = conn.SetWriteDeadline(time.Now().Add(client.timeoutConfig.WriteWait))
 			err := conn.WriteMessage(websocket.TextMessage, data)
 			if err != nil {
+				log.Debugf("[WsClient] Write error for %s: %v", client.webSocket.id, err)
 				client.error(fmt.Errorf("write failed: %w", err))
 				closure(err)
 				client.handleReconnection()
 				return
 			}
-			log.Debugf("written %d bytes", len(data))
+			log.Debugf("[WsClient] Written %d bytes for %s", len(data), client.webSocket.id)
 		case <-ticker.C:
 			// Send periodic ping
+			log.Debugf("[WsClient] Sending periodic ping for %s", client.webSocket.id)
 			_ = conn.SetWriteDeadline(time.Now().Add(client.timeoutConfig.WriteWait))
 			if err := conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+				log.Debugf("[WsClient] Ping send error for %s: %v", client.webSocket.id, err)
 				client.error(fmt.Errorf("failed to send ping message: %w", err))
 				closure(err)
 				client.handleReconnection()
 				return
 			}
-			log.Debugf("ping sent")
+			log.Debugf("[WsClient] Ping sent for %s", client.webSocket.id)
 		case closeErr := <-client.webSocket.closeC:
-			log.Debugf("closing connection")
+			log.Debugf("[WsClient] Received close signal for %s", client.webSocket.id)
 			// Closing connection gracefully
 			if err := conn.WriteControl(
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(closeErr.Code, closeErr.Text),
 				time.Now().Add(client.timeoutConfig.WriteWait),
 			); err != nil {
+				log.Debugf("[WsClient] Error sending close message for %s: %v", client.webSocket.id, err)
 				client.error(fmt.Errorf("failed to write close message: %w", err))
 			}
 			// Disconnected by user command. Not calling auto-reconnect.
 			// Passing nil will also not call onDisconnected.
+			log.Debugf("[WsClient] Invoking closure after close signal for %s", client.webSocket.id)
 			closure(nil)
 			return
 		case closed, ok := <-client.webSocket.forceCloseC:
-			log.Debugf("handling forced close signal")
+			log.Debugf("[WsClient] Force close signal received for %s (ok=%v, err=%v)", client.webSocket.id, ok, closed)
 			// Read pump sent a forceClose signal (reading failed -> aborting the connection)
 			if !ok || closed != nil {
+				log.Debugf("[WsClient] Invoking closure after force close for %s", client.webSocket.id)
 				closure(closed)
 				client.handleReconnection()
 				return
@@ -1093,20 +1100,24 @@ func (client *Client) readPump() {
 		return conn.SetReadDeadline(client.getReadTimeout())
 	})
 	for {
+		log.Debug("[WsClient] readPump: Waiting for message")
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			log.Debugf("[WsClient] Read error for %s: %v", client.webSocket.id, err)
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
 				client.error(fmt.Errorf("read failed: %w", err))
 			}
 			// Notify writePump of error. Forced close will be handled there
+			log.Debugf("[WsClient] Sending force close signal for %s", client.webSocket.id)
 			client.webSocket.forceCloseC <- err
 			return
 		}
 
-		log.Debugf("received %v bytes", len(message))
+		log.Debugf("[WsClient] Received %v bytes for %s", len(message), client.webSocket.id)
 		if client.messageHandler != nil {
 			err = client.messageHandler(message)
 			if err != nil {
+				log.Debugf("[WsClient] Message handler error for %s: %v", client.webSocket.id, err)
 				client.error(fmt.Errorf("handle failed: %w", err))
 				continue
 			}
