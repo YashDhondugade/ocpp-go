@@ -25,11 +25,13 @@ type Server struct {
 	RequestState              ServerState
 }
 
-type ClientHandler func(client ws.Channel)
-type RequestHandler func(client ws.Channel, request ocpp.Request, requestId string, action string)
-type ResponseHandler func(client ws.Channel, response ocpp.Response, requestId string)
-type ErrorHandler func(client ws.Channel, err *ocpp.Error, details interface{})
-type InvalidMessageHook func(client ws.Channel, err *ocpp.Error, rawJson string, parsedFields []interface{}) *ocpp.Error
+type (
+	ClientHandler      func(client ws.Channel)
+	RequestHandler     func(client ws.Channel, request ocpp.Request, requestId string, action string)
+	ResponseHandler    func(client ws.Channel, response ocpp.Response, requestId string)
+	ErrorHandler       func(client ws.Channel, err *ocpp.Error, details interface{})
+	InvalidMessageHook func(client ws.Channel, err *ocpp.Error, rawJson string, parsedFields []interface{}) *ocpp.Error
+)
 
 // Creates a new Server endpoint.
 // Requires a a websocket server. Optionally a structure for queueing/dispatching requests,
@@ -334,4 +336,46 @@ func (s *Server) onClientDisconnected(ws ws.Channel) {
 	if s.disconnectedClientHandler != nil {
 		s.disconnectedClientHandler(ws)
 	}
+}
+
+// CheckHealth returns comprehensive diagnostic information about the server's current state
+func (s *Server) CheckHealth() string {
+	// Basic server state
+	isRunning := s.dispatcher.IsRunning()
+
+	// Dispatcher health
+	dispatcherHealth := "no dispatcher"
+	if s.dispatcher != nil {
+		dispatcherHealth = s.dispatcher.CheckHealth()
+	}
+
+	// Request state health
+	requestStateHealth := "no request state"
+	if s.RequestState != nil {
+		requestStateHealth = s.RequestState.CheckHealth()
+	}
+
+	// WebSocket server health
+	wsServerHealth := "no websocket server"
+	if s.server != nil {
+		wsServerHealth = s.server.CheckHealth()
+	}
+
+	// Profile information
+	profileCount := len(s.Profiles)
+	profileNames := ""
+	for i, profile := range s.Profiles {
+		if i > 0 {
+			profileNames += ", "
+		}
+		profileNames += profile.Name
+	}
+
+	return fmt.Sprintf(`Server Health Check:
+  Status: running=%v
+  Profiles: count=%d, names=[%s]
+  Dispatcher: %s
+  RequestState: %s
+  WebSocketServer: %s`,
+		isRunning, profileCount, profileNames, dispatcherHealth, requestStateHealth, wsServerHealth)
 }

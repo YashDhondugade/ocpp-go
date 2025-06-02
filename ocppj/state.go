@@ -1,6 +1,7 @@
 package ocppj
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/lorenzodonini/ocpp-go/ocpp"
@@ -113,6 +114,8 @@ type ServerState interface {
 	// Does not perform a deep deletion; is references to client state objects
 	// are stored elsewhere, those will remain unaffected and become invalid.
 	ClearAllPendingRequests()
+	// CheckHealth returns diagnostic information about the server state's current state
+	CheckHealth() string
 }
 
 // --------------------------------
@@ -201,4 +204,28 @@ func (d *serverState) getOrCreateState(clientID string) ClientState {
 		return state
 	}
 	return stateVal.(ClientState)
+}
+
+// CheckHealth returns diagnostic information about the server state's current state
+func (d *serverState) CheckHealth() string {
+	clientCount := 0
+	pendingCount := 0
+	clientDetails := ""
+
+	d.pendingRequestState.Range(func(key, value interface{}) bool {
+		clientID := key.(string)
+		state := value.(ClientState)
+		clientCount++
+
+		hasPending := state.HasPendingRequest()
+		if hasPending {
+			pendingCount++
+		}
+
+		clientDetails += fmt.Sprintf("\n  - Client %s: hasPendingRequest=%v", clientID, hasPending)
+		return true // Continue iteration
+	})
+
+	return fmt.Sprintf("ServerState: clientCount=%d, pendingRequestCount=%d%s",
+		clientCount, pendingCount, clientDetails)
 }
