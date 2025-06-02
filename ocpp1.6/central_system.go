@@ -1,6 +1,7 @@
 package ocpp16
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 
@@ -733,56 +734,20 @@ func (cs *centralSystem) CheckHealth() string {
 	callbackQueueHealth := cs.callbackQueue.CheckHealth()
 
 	// Handler status
-	handlerStatus := ""
-	if cs.coreHandler != nil {
-		handlerStatus += " core=✓"
-	} else {
-		handlerStatus += " core=✗"
-	}
-	if cs.localAuthListHandler != nil {
-		handlerStatus += " localAuth=✓"
-	} else {
-		handlerStatus += " localAuth=✗"
-	}
-	if cs.firmwareHandler != nil {
-		handlerStatus += " firmware=✓"
-	} else {
-		handlerStatus += " firmware=✗"
-	}
-	if cs.reservationHandler != nil {
-		handlerStatus += " reservation=✓"
-	} else {
-		handlerStatus += " reservation=✗"
-	}
-	if cs.remoteTriggerHandler != nil {
-		handlerStatus += " remoteTrigger=✓"
-	} else {
-		handlerStatus += " remoteTrigger=✗"
-	}
-	if cs.smartChargingHandler != nil {
-		handlerStatus += " smartCharging=✓"
-	} else {
-		handlerStatus += " smartCharging=✗"
-	}
-	if cs.logHandler != nil {
-		handlerStatus += " log=✓"
-	} else {
-		handlerStatus += " log=✗"
-	}
-	if cs.securityHandler != nil {
-		handlerStatus += " security=✓"
-	} else {
-		handlerStatus += " security=✗"
-	}
-	if cs.secureFirmwareHandler != nil {
-		handlerStatus += " secureFirmware=✓"
-	} else {
-		handlerStatus += " secureFirmware=✗"
+	handlers := map[string]bool{
+		"core":           cs.coreHandler != nil,
+		"localAuth":      cs.localAuthListHandler != nil,
+		"firmware":       cs.firmwareHandler != nil,
+		"reservation":    cs.reservationHandler != nil,
+		"remoteTrigger":  cs.remoteTriggerHandler != nil,
+		"smartCharging":  cs.smartChargingHandler != nil,
+		"log":            cs.logHandler != nil,
+		"security":       cs.securityHandler != nil,
+		"secureFirmware": cs.secureFirmwareHandler != nil,
 	}
 
-	return fmt.Sprintf(`CentralSystem Health Check:
-  Server Health:%s
-  Callback Queue Health:%s
-  Handlers:%s`,
-		serverHealth, callbackQueueHealth, handlerStatus)
+	handlersJSON, _ := json.Marshal(handlers)
+
+	return fmt.Sprintf(`{"component":"CentralSystem","server":%s,"callbackQueue":%s,"handlers":%s}`,
+		serverHealth, callbackQueueHealth, string(handlersJSON))
 }

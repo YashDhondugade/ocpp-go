@@ -1,6 +1,7 @@
 package ocppj
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -210,7 +211,7 @@ func (d *serverState) getOrCreateState(clientID string) ClientState {
 func (d *serverState) CheckHealth() string {
 	clientCount := 0
 	pendingCount := 0
-	clientDetails := ""
+	clientDetails := make(map[string]bool)
 
 	d.pendingRequestState.Range(func(key, value interface{}) bool {
 		clientID := key.(string)
@@ -222,10 +223,12 @@ func (d *serverState) CheckHealth() string {
 			pendingCount++
 		}
 
-		clientDetails += fmt.Sprintf("\n  - Client %s: hasPendingRequest=%v", clientID, hasPending)
+		clientDetails[clientID] = hasPending
 		return true // Continue iteration
 	})
 
-	return fmt.Sprintf("ServerState: clientCount=%d, pendingRequestCount=%d%s",
-		clientCount, pendingCount, clientDetails)
+	clientDetailsJSON, _ := json.Marshal(clientDetails)
+
+	return fmt.Sprintf(`{"component":"ServerState","clientCount":%d,"pendingRequestCount":%d,"clients":%s}`,
+		clientCount, pendingCount, string(clientDetailsJSON))
 }

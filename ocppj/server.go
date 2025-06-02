@@ -1,6 +1,7 @@
 package ocppj
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"gopkg.in/go-playground/validator.v9"
@@ -344,38 +345,32 @@ func (s *Server) CheckHealth() string {
 	isRunning := s.dispatcher.IsRunning()
 
 	// Dispatcher health
-	dispatcherHealth := "no dispatcher"
+	dispatcherHealth := `"no dispatcher"`
 	if s.dispatcher != nil {
 		dispatcherHealth = s.dispatcher.CheckHealth()
 	}
 
 	// Request state health
-	requestStateHealth := "no request state"
+	requestStateHealth := `"no request state"`
 	if s.RequestState != nil {
 		requestStateHealth = s.RequestState.CheckHealth()
 	}
 
 	// WebSocket server health
-	wsServerHealth := "no websocket server"
+	wsServerHealth := `"no websocket server"`
 	if s.server != nil {
 		wsServerHealth = s.server.CheckHealth()
 	}
 
 	// Profile information
 	profileCount := len(s.Profiles)
-	profileNames := ""
-	for i, profile := range s.Profiles {
-		if i > 0 {
-			profileNames += ", "
-		}
-		profileNames += profile.Name
+	profileNames := []string{}
+	for _, profile := range s.Profiles {
+		profileNames = append(profileNames, profile.Name)
 	}
+	
+	profileNamesJSON, _ := json.Marshal(profileNames)
 
-	return fmt.Sprintf(`Server Health Check:
-  Status: running=%v
-  Profiles: count=%d, names=[%s]
-  Dispatcher: %s
-  RequestState: %s
-  WebSocketServer: %s`,
-		isRunning, profileCount, profileNames, dispatcherHealth, requestStateHealth, wsServerHealth)
+	return fmt.Sprintf(`{"component":"Server","status":{"running":%v},"profiles":{"count":%d,"names":%s},"dispatcher":%s,"requestState":%s,"webSocketServer":%s}`,
+		isRunning, profileCount, string(profileNamesJSON), dispatcherHealth, requestStateHealth, wsServerHealth)
 }

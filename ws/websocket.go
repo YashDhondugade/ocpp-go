@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,7 +148,7 @@ func (websocket *WebSocket) CheckHealth() string {
 		remoteAddr = websocket.connection.RemoteAddr().String()
 	}
 
-	return fmt.Sprintf("WebSocket: id=%s, remoteAddr=%s, isClosed=%v, outQueueLen=%d",
+	return fmt.Sprintf(`{"component":"WebSocket","id":"%s","remoteAddr":"%s","isClosed":%v,"outQueueLen":%d}`,
 		websocket.id, remoteAddr, websocket.isClosed.Load(), outQueueLen)
 }
 
@@ -406,12 +407,12 @@ func (server *Server) Connections(websocketId string) *WebSocket {
 // CheckHealth returns diagnostic information about the server's current state
 func (server *Server) CheckHealth() string {
 	connectionCount := 0
-	connectionDetails := ""
+	connections := []string{}
 
 	server.connections.Range(func(key, value interface{}) bool {
 		connectionCount++
 		ws := value.(*WebSocket)
-		connectionDetails += fmt.Sprintf("\n  - %s", ws.CheckHealth())
+		connections = append(connections, ws.CheckHealth())
 		return true
 	})
 
@@ -420,8 +421,9 @@ func (server *Server) CheckHealth() string {
 		addrInfo = server.addr.String()
 	}
 
-	return fmt.Sprintf("WsServer: connections=%d, address=%s, writeWait=%v, pingWait=%v%s",
-		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait, connectionDetails)
+	return fmt.Sprintf(`{"component":"WsServer","connections":%d,"address":"%s","writeWait":"%v","pingWait":"%v","connectionDetails":%s}`,
+		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait, 
+		"[" + strings.Join(connections, ",") + "]")
 }
 
 func (server *Server) AddHttpHandler(listenPath string, handler func(w http.ResponseWriter, r *http.Request)) {
@@ -995,7 +997,7 @@ func (client *Client) CheckHealth() string {
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
 
-	wsHealth := "not connected"
+	wsHealth := `"not connected"`
 	if client.connected {
 		wsHealth = client.webSocket.CheckHealth()
 	}
@@ -1005,7 +1007,7 @@ func (client *Client) CheckHealth() string {
 		urlStr = client.url.String()
 	}
 
-	return fmt.Sprintf("WsClient: connected=%v, url=%s, writeWait=%v, pingPeriod=%v, pongWait=%v, handshakeTimeout=%v, %s",
+	return fmt.Sprintf(`{"component":"WsClient","connected":%v,"url":"%s","writeWait":"%v","pingPeriod":"%v","pongWait":"%v","handshakeTimeout":"%v","websocket":%s}`,
 		client.connected, urlStr, client.timeoutConfig.WriteWait, client.timeoutConfig.PingPeriod,
 		client.timeoutConfig.PongWait, client.timeoutConfig.HandshakeTimeout, wsHealth)
 }

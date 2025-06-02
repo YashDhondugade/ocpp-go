@@ -1,6 +1,7 @@
 package callbackqueue
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -68,16 +69,18 @@ func (cq *CallbackQueue) CheckHealth() string {
 	defer cq.callbacksMutex.RUnlock()
 
 	totalCallbacks := 0
-	clientDetails := ""
+	clientDetails := make(map[string]int)
 
 	for clientID, callbacks := range cq.callbacks {
 		count := len(callbacks)
 		totalCallbacks += count
 		if count > 0 {
-			clientDetails += fmt.Sprintf("\n    - Client %s: %d pending", clientID, count)
+			clientDetails[clientID] = count
 		}
 	}
 
-	return fmt.Sprintf("CallbackQueue: totalPending=%d, clientCount=%d%s",
-		totalCallbacks, len(cq.callbacks), clientDetails)
+	clientDetailsJSON, _ := json.Marshal(clientDetails)
+
+	return fmt.Sprintf(`{"component":"CallbackQueue","totalPending":%d,"clientCount":%d,"clients":%s}`,
+		totalCallbacks, len(cq.callbacks), string(clientDetailsJSON))
 }
