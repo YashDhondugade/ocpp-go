@@ -59,6 +59,10 @@ func (websocket MockWebSocket) TLSConnectionState() *tls.ConnectionState {
 	return nil
 }
 
+func (websocket MockWebSocket) CheckHealth() string {
+	return ""
+}
+
 func NewMockWebSocket(id string) MockWebSocket {
 	return MockWebSocket{id: id}
 }
@@ -1160,8 +1164,7 @@ func (suite *OcppV2TestSuite) TestIsConnected() {
 	assert.False(t, suite.chargingStation.IsConnected())
 }
 
-//TODO: implement generic protocol tests
-
+// TODO: implement generic protocol tests
 func TestOcpp2Protocol(t *testing.T) {
 	logrus.SetLevel(logrus.PanicLevel)
 	suite.Run(t, new(OcppV2TestSuite))

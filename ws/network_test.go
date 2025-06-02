@@ -143,7 +143,8 @@ func (s *NetworkTestSuite) TestClientAutoReconnect() {
 	s.server = newWebsocketServer(t, nil)
 	s.server.SetNewClientHandler(func(ws Channel) {
 		assert.NotNil(t, ws)
-		conn := s.server.connections[ws.ID()]
+		connAnyType, _ := s.server.connections.Load(ws.ID())
+		conn := connAnyType.(*WebSocket)
 		require.NotNil(t, conn)
 	})
 	s.server.SetDisconnectedClientHandler(func(ws Channel) {
@@ -172,10 +173,12 @@ func (s *NetworkTestSuite) TestClientAutoReconnect() {
 	require.Nil(t, err)
 	// Close all connection from server side
 	time.Sleep(500 * time.Millisecond)
-	for _, s := range s.server.connections {
-		err = s.connection.Close()
+	s.server.connections.Range(func(key, value interface{}) bool {
+		conn := value.(*WebSocket)
+		err = conn.connection.Close()
 		require.Nil(t, err)
-	}
+		return true
+	})
 	// Wait for disconnect to propagate
 	result := <-serverOnDisconnected
 	require.True(t, result)
@@ -341,8 +344,7 @@ func (s *NetworkTestSuite) TestClientReadTimeout() {
 	s.server.Stop()
 }
 
-//TODO: test error channel from websocket
-
+// TODO: test error channel from websocket
 func TestNetworkErrors(t *testing.T) {
 	suite.Run(t, new(NetworkTestSuite))
 }

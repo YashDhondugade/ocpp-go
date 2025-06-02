@@ -50,6 +50,10 @@ func (websocket MockWebSocket) TLSConnectionState() *tls.ConnectionState {
 	return nil
 }
 
+func (websocket MockWebSocket) CheckHealth() string {
+	return ""
+}
+
 func NewMockWebSocket(id string) MockWebSocket {
 	return MockWebSocket{id: id}
 }
@@ -98,6 +102,10 @@ func (websocketServer *MockWebsocketServer) NewClient(websocketId string, client
 
 func (websocketServer *MockWebsocketServer) SetCheckClientHandler(handler func(id string, r *http.Request) bool) {
 	websocketServer.CheckClientHandler = handler
+}
+
+func (websocketServer *MockWebsocketServer) CheckHealth() string {
+	return ""
 }
 
 // ---------------------- MOCK WEBSOCKET CLIENT ----------------------
