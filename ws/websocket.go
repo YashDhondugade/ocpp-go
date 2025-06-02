@@ -116,6 +116,7 @@ type Channel interface {
 	ID() string
 	RemoteAddr() net.Addr
 	TLSConnectionState() *tls.ConnectionState
+	CheckHealth() string
 }
 
 // WebSocket is a wrapper for a single websocket channel.
@@ -132,6 +133,22 @@ type WebSocket struct {
 	tlsConnectionState *tls.ConnectionState
 	cleanupOnce        sync.Once   // ensures cleanup only happens once
 	isClosed           atomic.Bool // atomic flag to track if connection is closed
+}
+
+// CheckHealth returns diagnostic information about the websocket's current state
+func (websocket *WebSocket) CheckHealth() string {
+	outQueueLen := -1
+	if websocket.outQueue != nil {
+		outQueueLen = len(websocket.outQueue)
+	}
+
+	remoteAddr := "not connected"
+	if websocket.connection != nil && websocket.connection.RemoteAddr() != nil {
+		remoteAddr = websocket.connection.RemoteAddr().String()
+	}
+
+	return fmt.Sprintf("WebSocket: id=%s, remoteAddr=%s, isClosed=%v, outQueueLen=%d",
+		websocket.id, remoteAddr, websocket.isClosed.Load(), outQueueLen)
 }
 
 // Retrieves the unique Identifier of the websocket (typically, the URL suffix).
@@ -260,6 +277,8 @@ type WsServer interface {
 	// If a connection with the given ID exists, it returns the corresponding WebSocket instance.
 	// If no connection is found with the specified ID, it returns nil.
 	Connections(websocketId string) *WebSocket
+	// CheckHealth returns a string with diagnostic information about the server's current state
+	CheckHealth() string
 }
 
 // Default implementation of a Websocket server.
@@ -382,6 +401,27 @@ func (server *Server) Connections(websocketId string) *WebSocket {
 		return wsInterface.(*WebSocket)
 	}
 	return nil
+}
+
+// CheckHealth returns diagnostic information about the server's current state
+func (server *Server) CheckHealth() string {
+	connectionCount := 0
+	connectionDetails := ""
+
+	server.connections.Range(func(key, value interface{}) bool {
+		connectionCount++
+		ws := value.(*WebSocket)
+		connectionDetails += fmt.Sprintf("\n  - %s", ws.CheckHealth())
+		return true
+	})
+
+	addrInfo := "not listening"
+	if server.addr != nil {
+		addrInfo = server.addr.String()
+	}
+
+	return fmt.Sprintf("WsServer: connections=%d, address=%s, writeWait=%v, pingWait=%v%s",
+		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait, connectionDetails)
 }
 
 func (server *Server) AddHttpHandler(listenPath string, handler func(w http.ResponseWriter, r *http.Request)) {
@@ -838,6 +878,8 @@ type WsClient interface {
 	//
 	// The function overwrites previous header fields with the same key.
 	SetHeaderValue(key string, value string)
+	// CheckHealth returns a string with diagnostic information about the client's current state
+	CheckHealth() string
 }
 
 // Client is the default implementation of a Websocket client.
@@ -946,6 +988,26 @@ func (client *Client) SetBasicAuth(username string, password string) {
 
 func (client *Client) SetHeaderValue(key string, value string) {
 	client.header.Set(key, value)
+}
+
+// CheckHealth returns diagnostic information about the client's current state
+func (client *Client) CheckHealth() string {
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
+
+	wsHealth := "not connected"
+	if client.connected {
+		wsHealth = client.webSocket.CheckHealth()
+	}
+
+	urlStr := "not set"
+	if client.url.String() != "" {
+		urlStr = client.url.String()
+	}
+
+	return fmt.Sprintf("WsClient: connected=%v, url=%s, writeWait=%v, pingPeriod=%v, pongWait=%v, handshakeTimeout=%v, %s",
+		client.connected, urlStr, client.timeoutConfig.WriteWait, client.timeoutConfig.PingPeriod,
+		client.timeoutConfig.PongWait, client.timeoutConfig.HandshakeTimeout, wsHealth)
 }
 
 func (client *Client) getReadTimeout() time.Time {
