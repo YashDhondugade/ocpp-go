@@ -325,6 +325,8 @@ type CentralSystem interface {
 	Stop()
 	// Errors returns a channel for error messages. If it doesn't exist it es created.
 	Errors() <-chan error
+	// CheckHealth returns comprehensive diagnostic information about the central system's current state
+	CheckHealth() string
 }
 
 // Creates a new OCPP 1.6 central system.

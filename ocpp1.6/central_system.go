@@ -359,7 +359,6 @@ func (cs *centralSystem) TriggerMessageExtended(clientId string, callback func(*
 		}
 	}
 	return cs.SendRequestAsync(clientId, request, genericCallback)
-
 }
 
 func (cs *centralSystem) CertificateSigned(clientId string, callback func(*security.CertificateSignedResponse, error), csr string, props ...func(request *security.CertificateSignedRequest)) error {
@@ -723,4 +722,67 @@ func (cs *centralSystem) handleCanceledRequest(chargePointID string, request ocp
 			request.GetFeatureName(), chargePointID, err)
 		cs.error(err)
 	}
+}
+
+// CheckHealth returns comprehensive diagnostic information about the central system's current state
+func (cs *centralSystem) CheckHealth() string {
+	// Get server health which includes dispatcher, request state, WebSocket server, and profiles
+	serverHealth := cs.server.CheckHealth()
+
+	// Add callback queue information
+	callbackQueueHealth := cs.callbackQueue.CheckHealth()
+
+	// Handler status
+	handlerStatus := ""
+	if cs.coreHandler != nil {
+		handlerStatus += " core=✓"
+	} else {
+		handlerStatus += " core=✗"
+	}
+	if cs.localAuthListHandler != nil {
+		handlerStatus += " localAuth=✓"
+	} else {
+		handlerStatus += " localAuth=✗"
+	}
+	if cs.firmwareHandler != nil {
+		handlerStatus += " firmware=✓"
+	} else {
+		handlerStatus += " firmware=✗"
+	}
+	if cs.reservationHandler != nil {
+		handlerStatus += " reservation=✓"
+	} else {
+		handlerStatus += " reservation=✗"
+	}
+	if cs.remoteTriggerHandler != nil {
+		handlerStatus += " remoteTrigger=✓"
+	} else {
+		handlerStatus += " remoteTrigger=✗"
+	}
+	if cs.smartChargingHandler != nil {
+		handlerStatus += " smartCharging=✓"
+	} else {
+		handlerStatus += " smartCharging=✗"
+	}
+	if cs.logHandler != nil {
+		handlerStatus += " log=✓"
+	} else {
+		handlerStatus += " log=✗"
+	}
+	if cs.securityHandler != nil {
+		handlerStatus += " security=✓"
+	} else {
+		handlerStatus += " security=✗"
+	}
+	if cs.secureFirmwareHandler != nil {
+		handlerStatus += " secureFirmware=✓"
+	} else {
+		handlerStatus += " secureFirmware=✗"
+	}
+
+	return fmt.Sprintf(`CentralSystem Health Check:
+  Server Health:%s
+  Callback Queue Health:%s
+  Handlers:%s`,
+		serverHealth, callbackQueueHealth, handlerStatus)
 }
