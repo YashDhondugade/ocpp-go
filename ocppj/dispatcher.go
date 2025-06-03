@@ -438,8 +438,8 @@ func (d *DefaultServerDispatcher) Start() {
 	log.Info("[DefaultServerDispatcher] Starting dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
-	d.requestChannel = make(chan string, 20)
-	d.timerC = make(chan string, 10)
+	d.requestChannel = make(chan string, 1500)
+	d.timerC = make(chan string, 1500)
 	d.stoppedC = make(chan struct{}, 1)
 	d.running = true
 	go d.messagePump()
@@ -476,10 +476,23 @@ func (d *DefaultServerDispatcher) DeleteClient(clientID string) {
 	d.queueMap.Remove(clientID)
 	if d.IsRunning() {
 		log.Debugf("[DefaultServerDispatcher] DeleteClient: about to acquire lock and notify channel for client %s", clientID)
+		// Quick check if dispatcher is running and get channel
 		d.mutex.RLock()
-		d.requestChannel <- clientID
-		log.Debugf("[DefaultServerDispatcher] DeleteClient: wrote to channel, releasing lock for client %s", clientID)
+		if !d.running {
+			log.Debugf("[DefaultServerDispatcher] DeleteClient: dispatcher not running for client %s", clientID)
+			d.mutex.RUnlock()
+			return
+		}
+		reqChan := d.requestChannel
 		d.mutex.RUnlock()
+
+		// Try to send with timeout to prevent indefinite blocking
+		select {
+		case reqChan <- clientID:
+			log.Infof("[DefaultServerDispatcher] DeleteClient: successfully deleted client %s", clientID)
+		case <-time.After(100 * time.Millisecond):
+			log.Infof("[DefaultServerDispatcher] DeleteClient: timeout while trying to delete client %s, channel might be full", clientID)
+		}
 	}
 }
 
@@ -507,13 +520,26 @@ func (d *DefaultServerDispatcher) SendRequest(clientID string, req RequestBundle
 		return err
 	}
 	log.Infof("[DefaultServerDispatcher] ESP SendRequest: About to acquire lock for %s (client: %s)", req.Call.UniqueId, clientID)
+
+	// Quick check if dispatcher is running and get channel
 	d.mutex.RLock()
-	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Acquired lock, about to write to channel for %s (client: %s)", req.Call.UniqueId, clientID)
-	d.requestChannel <- clientID
-	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Wrote to channel, about to release lock for %s (client: %s)", req.Call.UniqueId, clientID)
+	if !d.running {
+		log.Infof("[DefaultServerDispatcher] ESP SendRequest: dispatcher not running for %s (client: %s)", req.Call.UniqueId, clientID)
+		d.mutex.RUnlock()
+		return fmt.Errorf("dispatcher is not running")
+	}
+	reqChan := d.requestChannel
 	d.mutex.RUnlock()
-	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Released lock for %s (client: %s)", req.Call.UniqueId, clientID)
-	return nil
+
+	// Try to send with timeout to prevent indefinite blocking
+	select {
+	case reqChan <- clientID:
+		log.Infof("[DefaultServerDispatcher] ESP SendRequest: Successfully sent request %s (client: %s)", req.Call.UniqueId, clientID)
+		return nil
+	case <-time.After(100 * time.Millisecond):
+		log.Infof("[DefaultServerDispatcher] ESP SendRequest: Timeout while sending request %s (client: %s), channel might be full", req.Call.UniqueId, clientID)
+		return fmt.Errorf("timeout while trying to send request, channel might be full")
+	}
 }
 
 // requestPump processes new outgoing requests for each client and makes sure they are processed sequentially.
@@ -530,8 +556,14 @@ func (d *DefaultServerDispatcher) messagePump() {
 
 	reqChan := func() chan string {
 		d.mutex.RLock()
-		defer d.mutex.RUnlock()
-		return d.requestChannel
+		if !d.running {
+			log.Debug("[DefaultServerDispatcher] messagePump: dispatcher not running")
+			d.mutex.RUnlock()
+			return nil
+		}
+		ch := d.requestChannel
+		d.mutex.RUnlock()
+		return ch
 	}
 
 	// Dispatcher Loop
@@ -542,11 +574,15 @@ func (d *DefaultServerDispatcher) messagePump() {
 			// Server was stopped
 			log.Info("[DefaultServerDispatcher] messagePump: received stop signal")
 			d.queueMap.Init()
-			log.Info("stopped processing requests")
+			log.Info("[DefaultServerDispatcher] stopped processing requests")
 			return
 		case clientID = <-reqChan():
 			// Check whether there is a request queue for the specified client
 			log.Debugf("[DefaultServerDispatcher] messagePump: received request for client %s", clientID)
+			if ch := reqChan(); ch == nil {
+				log.Debug("[DefaultServerDispatcher] messagePump: dispatcher not running, skipping request")
+				continue
+			}
 			clientQueue, ok = d.queueMap.Get(clientID)
 			if !ok {
 				// No client queue found (client was removed)
