@@ -427,7 +427,7 @@ func NewDefaultServerDispatcher(queueMap ServerQueueMap) *DefaultServerDispatche
 	d := &DefaultServerDispatcher{
 		queueMap:         queueMap,
 		requestChannel:   nil,
-		readyForDispatch: make(chan string, 1),
+		readyForDispatch: make(chan string, 1500),
 		timeout:          defaultMessageTimeout,
 	}
 	d.pendingRequestState = NewServerState(&d.mutex)
