@@ -427,7 +427,7 @@ func NewDefaultServerDispatcher(queueMap ServerQueueMap) *DefaultServerDispatche
 	d := &DefaultServerDispatcher{
 		queueMap:         queueMap,
 		requestChannel:   nil,
-		readyForDispatch: make(chan string, 1),
+		readyForDispatch: make(chan string, 1500),
 		timeout:          defaultMessageTimeout,
 	}
 	d.pendingRequestState = NewServerState(&d.mutex)
@@ -438,8 +438,8 @@ func (d *DefaultServerDispatcher) Start() {
 	log.Info("[DefaultServerDispatcher] Starting dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
-	d.requestChannel = make(chan string, 20)
-	d.timerC = make(chan string, 10)
+	d.requestChannel = make(chan string, 1500)
+	d.timerC = make(chan string, 1500)
 	d.stoppedC = make(chan struct{}, 1)
 	d.running = true
 	go d.messagePump()
