@@ -569,7 +569,7 @@ out:
 	ws := WebSocket{
 		connection:         conn,
 		id:                 id,
-		outQueue:           make(chan []byte, 1),
+		outQueue:           make(chan []byte, 100),
 		closeC:             make(chan websocket.CloseError, 1),
 		forceCloseC:        make(chan error, 1),
 		pingMessage:        make(chan []byte, 1),
