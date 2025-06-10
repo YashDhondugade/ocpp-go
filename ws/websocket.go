@@ -422,8 +422,8 @@ func (server *Server) CheckHealth() string {
 	}
 
 	return fmt.Sprintf(`{"component":"WsServer","connections":%d,"address":"%s","writeWait":"%v","pingWait":"%v","connectionDetails":%s}`,
-		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait, 
-		"[" + strings.Join(connections, ",") + "]")
+		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait,
+		"["+strings.Join(connections, ",")+"]")
 }
 
 func (server *Server) AddHttpHandler(listenPath string, handler func(w http.ResponseWriter, r *http.Request)) {
@@ -505,7 +505,11 @@ func (server *Server) Write(webSocketId string, data []byte) error {
 	}
 	ws := wsInterface.(*WebSocket)
 	log.Debugf("queuing data for websocket %s", webSocketId)
-	ws.outQueue <- data
+	if !ws.isClosed.Load() {
+		ws.outQueue <- data
+	} else {
+		return fmt.Errorf("couldn't write to websocket. outQueue is closed. No socket with id %v is open", webSocketId)
+	}
 	return nil
 }
 
@@ -594,7 +598,6 @@ out:
 		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
 			time.Now().Add(server.timeoutConfig.WriteWait))
-		_ = existingWs.connection.Close()
 
 		// Clean up the existing connection
 		log.Debugf("[ESP-WS] Cleaning up existing connection for %s", id)
@@ -648,6 +651,12 @@ func (server *Server) readPump(ws *WebSocket) {
 	_ = conn.SetReadDeadline(server.getReadTimeout())
 
 	for {
+		// Skip message handling if connection is closed
+		if ws.isClosed.Load() {
+			log.Debugf("[ESP-WS] Connection closed, skipping message handling for %s", ws.ID())
+			return
+		}
+
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
@@ -745,7 +754,7 @@ func (server *Server) cleanupConnection(ws *WebSocket) {
 		// Close the physical connection
 		log.Debugf("[ESP-WS] Closing connection for %s", ws.ID())
 		if err := ws.connection.Close(); err != nil {
-			log.Debugf("[ESP-WS] Error closing connection for %s: %v", ws.ID(), err)
+			log.Errorf("[ESP-WS] Error closing connection for %s: %v", ws.ID(), err)
 		}
 
 		// Safely close channels using recover to prevent panic on already closed channels
@@ -753,7 +762,7 @@ func (server *Server) cleanupConnection(ws *WebSocket) {
 		safeClose := func(ch interface{}) {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Debugf("[ESP-WS] Channel already closed for %s", ws.ID())
+					log.Errorf("[ESP-WS] Channel already closed for %s", ws.ID())
 				}
 			}()
 			switch c := ch.(type) {
