@@ -598,10 +598,13 @@ func (d *DefaultServerDispatcher) messagePump() {
 				d.CompleteRequest(clientID, bundle.Call.UniqueId)
 				log.Infof("request %v for %v timed out", bundle.Call.UniqueId, clientID)
 				if d.onRequestCancel != nil {
+					log.Debugf("[DefaultServerDispatcher] messagePump: About to call onRequestCancel for client %s, request %s", clientID, bundle.Call.UniqueId)
 					d.onRequestCancel(clientID, bundle.Call.UniqueId, bundle.Call.Payload,
 						ocpp.NewError(GenericError, "Request timed out", bundle.Call.UniqueId))
+					log.Debugf("[DefaultServerDispatcher] messagePump: Called onRequestCancel for client %s, request %s", clientID, bundle.Call.UniqueId)
 				}
 			}
+			log.Debugf("[DefaultServerDispatcher] messagePump: done processing timeout for client %s", clientID)
 		case clientID = <-d.readyForDispatch:
 			// Cancel previous timeout (if any)
 			log.Debugf("[DefaultServerDispatcher] messagePump: received ready for dispatch for client %s", clientID)
@@ -621,14 +624,18 @@ func (d *DefaultServerDispatcher) messagePump() {
 
 		// Only dispatch request if able to send and request queue isn't empty
 		if rdy && clientQueue != nil && !clientQueue.IsEmpty() {
+			log.Debugf("[DefaultServerDispatcher] messagePump: about to dispatch request for client %s", clientID)
 			// Send request & set new context
 			clientCtx = d.dispatchNextRequest(clientID)
+			log.Debugf("[DefaultServerDispatcher] messagePump: dispatched request for client %s, context active: %v", clientID, clientCtx.isActive())
 			clientContextMap[clientID] = clientCtx
 			if clientCtx.isActive() {
+				log.Debugf("[DefaultServerDispatcher] messagePump: starting timeout goroutine for client %s", clientID)
 				go d.waitForTimeout(clientID, clientCtx)
 			}
 			// Update ready state
 			rdy = false
+			log.Debugf("[DefaultServerDispatcher] messagePump: set ready state to false for client %s", clientID)
 		}
 	}
 }
