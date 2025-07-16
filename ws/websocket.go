@@ -639,7 +639,13 @@ func (server *Server) readPump(ws *WebSocket) {
 	conn.SetPingHandler(func(appData string) error {
 		log.Debugf("[ESP-WS] Ping received from %s", ws.ID())
 		if !ws.isClosed.Load() {
-			ws.pingMessage <- []byte(appData)
+			select {
+			case ws.pingMessage <- []byte(appData):
+				// Successfully sent ping message
+			default:
+				// Channel is closed or full, ignore silently
+				log.Debugf("[ESP-WS] Ping message channel unavailable for %s", ws.ID())
+			}
 		}
 		err := conn.SetReadDeadline(server.getReadTimeout())
 		if err != nil {
