@@ -593,23 +593,12 @@ out:
 	// Check whether client exists
 	if existingWsInterface, exists := server.connections.Load(id); exists {
 		existingWs := existingWsInterface.(*WebSocket)
-		log.Debugf("[ESP-WS] Client %s already exists, handling duplicate connection", id)
-
+		log.Debugf("[ESP-WS] Client %s already exists, replacing with new connection", id)
 		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
+			websocket.FormatCloseMessage(websocket.CloseGoingAway, "connection superseded by a new session"),
 			time.Now().Add(server.timeoutConfig.WriteWait))
-
-		// Clean up the existing connection
 		log.Debugf("[ESP-WS] Cleaning up existing connection for %s", id)
 		server.cleanupConnection(existingWs)
-
-		_ = conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a connection with this ID already exists"),
-			time.Now().Add(server.timeoutConfig.WriteWait))
-		_ = conn.Close()
-
-		log.Debugf("[ESP-WS] Both connections cleaned up for %s", id)
-		return
 	}
 	// Add new client
 	log.Debugf("[ESP-WS] Storing new connection for %s in sync.Map", id)
