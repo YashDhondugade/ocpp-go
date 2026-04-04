@@ -382,7 +382,12 @@ func (server *Server) SetCheckOriginHandler(handler func(r *http.Request) bool) 
 func (server *Server) error(err error) {
 	log.Error(err)
 	if server.errC != nil {
-		server.errC <- err
+		// Never block read/write pumps: errC capacity is 1; an undrained Errors() channel
+		// would deadlock cleanup (e.g. many client RSTs behind an NLB).
+		select {
+		case server.errC <- err:
+		default:
+		}
 	}
 }
 
@@ -576,7 +581,7 @@ out:
 		outQueue:           make(chan []byte, 100),
 		closeC:             make(chan websocket.CloseError, 1),
 		forceCloseC:        make(chan error, 1),
-		pingMessage:        make(chan []byte, 1),
+		pingMessage:        make(chan []byte, 8),
 		tlsConnectionState: r.TLS,
 		isClosed:           atomic.Bool{},
 	}
@@ -670,6 +675,7 @@ func (server *Server) readPump(ws *WebSocket) {
 			} else {
 				log.Debugf("[ESP-WS] Connection already closed for %s, skipping force close signal", ws.ID())
 			}
+			server.cleanupConnection(ws)
 			return
 		}
 
@@ -722,6 +728,19 @@ func (server *Server) writePump(ws *WebSocket) {
 			log.Debugf("[ESP-WS] Invoking cleanup after close signal for %s", ws.ID())
 			server.cleanupConnection(ws)
 			return
+		case pingData, ok := <-ws.pingMessage:
+			if !ok {
+				log.Debugf("[ESP-WS] Ping message channel closed for %s", ws.ID())
+				return
+			}
+			log.Debugf("[ESP-WS] Sending pong response to %s", ws.ID())
+			_ = conn.SetWriteDeadline(time.Now().Add(server.timeoutConfig.WriteWait))
+			if err := conn.WriteMessage(websocket.PongMessage, pingData); err != nil {
+				log.Debugf("[ESP-WS] Pong write error for %s: %v", ws.ID(), err)
+				server.error(fmt.Errorf("pong write failed for %s: %w", ws.ID(), err))
+				server.cleanupConnection(ws)
+				return
+			}
 		case closed, ok := <-ws.forceCloseC:
 			log.Debugf("[ESP-WS] Force close signal received for %s (ok=%v, err=%v)", ws.ID(), ok, closed)
 			if !ok || closed != nil {
@@ -1279,7 +1298,10 @@ func (client *Client) Stop() {
 func (client *Client) error(err error) {
 	log.Error(err)
 	if client.errC != nil {
-		client.errC <- err
+		select {
+		case client.errC <- err:
+		default:
+		}
 	}
 }
 
