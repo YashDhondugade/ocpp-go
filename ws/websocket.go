@@ -306,7 +306,12 @@ type Server struct {
 func NewServer() *Server {
 	router := mux.NewRouter()
 	return &Server{
-		httpServer:    &http.Server{},
+		httpServer:   &http.Server{
+            ReadHeaderTimeout: 10 * time.Second,
+            ReadTimeout:       30 * time.Second,
+            WriteTimeout:      60 * time.Second,
+            IdleTimeout:       120 * time. Second,
+        },
 		timeoutConfig: NewServerTimeoutConfig(),
 		upgrader:      websocket.Upgrader{Subprotocols: []string{}},
 		httpHandler:   router,
