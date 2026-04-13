@@ -315,12 +315,12 @@ type Server struct {
 func NewServer() *Server {
 	router := mux.NewRouter()
 	return &Server{
-		httpServer:   &http.Server{
-            ReadHeaderTimeout: 10 * time.Second,
-            ReadTimeout:       30 * time.Second,
-            WriteTimeout:      60 * time.Second,
-            IdleTimeout:       120 * time. Second,
-        },
+		httpServer: &http.Server{
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		},
 		timeoutConfig: NewServerTimeoutConfig(),
 		upgrader:      websocket.Upgrader{Subprotocols: []string{}},
 		httpHandler:   router,
@@ -610,15 +610,17 @@ out:
 		_ = conn.Close()
 		return
 	}
-	// Check whether client exists
+	// Check whether client exists — close the old connection, keep the new one
 	if existingWsInterface, exists := server.connections.Load(id); exists {
 		existingWs := existingWsInterface.(*WebSocket)
-		log.Debugf("[ESP-WS] Client %s already exists, replacing with new connection", id)
+		log.Debugf("[ESP-WS] Client %s already exists, closing old connection", id)
+
 		_ = existingWs.connection.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseGoingAway, "connection superseded by a new session"),
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "a new connection with this ID was established"),
 			time.Now().Add(server.timeoutConfig.WriteWait))
-		log.Debugf("[ESP-WS] Cleaning up existing connection for %s", id)
+
 		server.cleanupConnection(existingWs)
+		log.Debugf("[ESP-WS] Old connection cleaned up for %s, accepting new connection", id)
 	}
 	// Add new client
 	log.Debugf("[ESP-WS] Storing new connection for %s in sync.Map", id)
