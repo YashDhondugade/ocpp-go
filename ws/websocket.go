@@ -32,6 +32,8 @@ const (
 	defaultPongWait = 60 * time.Second
 	// Time allowed to wait for a ping on the server, before closing a connection due to inactivity.
 	defaultPingWait = defaultPongWait
+	// Default time to wait for a pong response from the client on the server side.
+	defaultServerPongWait = 60 * time.Second
 	// Send pings to peer with this period. Must be less than pongWait.
 	defaultPingPeriod = (defaultPongWait * 9) / 10
 	// Time allowed for the initial handshake to complete.
@@ -71,15 +73,22 @@ func SetLogger(logger logging.Logger) {
 // To set a custom configuration, refer to the server's SetTimeoutConfig method.
 // If no configuration is passed, a default configuration is generated via the NewServerTimeoutConfig function.
 type ServerTimeoutConfig struct {
-	WriteWait time.Duration
-	PingWait  time.Duration
+	WriteWait  time.Duration
+	PingWait   time.Duration // Deprecated: read-inactivity timeout. Used only when PingPeriod == 0.
+	PingPeriod time.Duration // Server-initiated ping interval. 0 = disabled (backward compatible).
+	PongWait   time.Duration // Max time to wait for pong. Only used when PingPeriod > 0.
 }
 
 // NewServerTimeoutConfig creates a default timeout configuration for a websocket endpoint.
 //
 // You may change fields arbitrarily and pass the struct to a SetTimeoutConfig method.
 func NewServerTimeoutConfig() ServerTimeoutConfig {
-	return ServerTimeoutConfig{WriteWait: defaultWriteWait, PingWait: defaultPingWait}
+	return ServerTimeoutConfig{
+		WriteWait:  defaultWriteWait,
+		PingWait:   defaultPingWait,
+		PingPeriod: 0,
+		PongWait:   defaultServerPongWait,
+	}
 }
 
 // Config contains optional configuration parameters for a websocket client.
@@ -431,8 +440,9 @@ func (server *Server) CheckHealth() string {
 		addrInfo = server.addr.String()
 	}
 
-	return fmt.Sprintf(`{"component":"WsServer","connections":%d,"address":"%s","writeWait":"%v","pingWait":"%v","connectionDetails":%s}`,
+	return fmt.Sprintf(`{"component":"WsServer","connections":%d,"address":"%s","writeWait":"%v","pingWait":"%v","pingPeriod":"%v","pongWait":"%v","connectionDetails":%s}`,
 		connectionCount, addrInfo, server.timeoutConfig.WriteWait, server.timeoutConfig.PingWait,
+		server.timeoutConfig.PingPeriod, server.timeoutConfig.PongWait,
 		"["+strings.Join(connections, ",")+"]")
 }
 
@@ -625,6 +635,14 @@ out:
 }
 
 func (server *Server) getReadTimeout() time.Time {
+	if server.timeoutConfig.PingPeriod > 0 {
+		// Server-initiated ping mode: use PongWait as the read deadline
+		if server.timeoutConfig.PongWait == 0 {
+			return time.Time{}
+		}
+		return time.Now().Add(server.timeoutConfig.PongWait)
+	}
+	// Legacy mode: use PingWait (read inactivity timeout)
 	if server.timeoutConfig.PingWait == 0 {
 		return time.Time{}
 	}
@@ -636,15 +654,17 @@ func (server *Server) readPump(ws *WebSocket) {
 	log.Debugf("[ESP-WS] Starting readPump for %s", ws.ID())
 
 	conn.SetPingHandler(func(appData string) error {
-		log.Debugf("[ESP-WS] Ping received from %s", ws.ID())
+		log.Debugf("[ESP-WS] Ping received from %s (payload=%q, len=%d)", ws.ID(), appData, len(appData))
 		if !ws.isClosed.Load() {
 			select {
 			case ws.pingMessage <- []byte(appData):
-				// Successfully sent ping message
+				log.Debugf("[ESP-WS] Ping message queued for pong reply to %s", ws.ID())
 			default:
 				// Channel is closed or full, ignore silently
-				log.Debugf("[ESP-WS] Ping message channel unavailable for %s", ws.ID())
+				log.Debugf("[ESP-WS] Ping message channel unavailable for %s (full or closed)", ws.ID())
 			}
+		} else {
+			log.Debugf("[ESP-WS] Ping received but connection already closed for %s", ws.ID())
 		}
 		err := conn.SetReadDeadline(server.getReadTimeout())
 		if err != nil {
@@ -652,6 +672,14 @@ func (server *Server) readPump(ws *WebSocket) {
 		}
 		return err
 	})
+
+	// Handle pong responses (for server-initiated pings)
+	if server.timeoutConfig.PingPeriod > 0 {
+		conn.SetPongHandler(func(appData string) error {
+			log.Debugf("[ESP-WS] Pong received from %s", ws.ID())
+			return conn.SetReadDeadline(server.getReadTimeout())
+		})
+	}
 
 	_ = conn.SetReadDeadline(server.getReadTimeout())
 
@@ -706,6 +734,26 @@ func (server *Server) writePump(ws *WebSocket) {
 	log.Debugf("[ESP-WS] Starting writePump for %s", ws.ID())
 	conn := ws.connection
 
+	// Set up optional server-initiated ping ticker
+	var tickerC <-chan time.Time
+	var ticker *time.Ticker
+	if server.timeoutConfig.PingPeriod > 0 {
+		if server.timeoutConfig.PingPeriod >= server.timeoutConfig.PongWait {
+			log.Errorf("[ESP-WS] PingPeriod (%v) should be less than PongWait (%v) for %s",
+				server.timeoutConfig.PingPeriod, server.timeoutConfig.PongWait, ws.ID())
+		}
+		ticker = time.NewTicker(server.timeoutConfig.PingPeriod)
+		tickerC = ticker.C
+		log.Debugf("[ESP-WS] Ping ticker started for %s (period=%v)", ws.ID(), server.timeoutConfig.PingPeriod)
+	}
+
+	cleanup := func() {
+		if ticker != nil {
+			ticker.Stop()
+		}
+		server.cleanupConnection(ws)
+	}
+
 	for {
 		select {
 		case data, ok := <-ws.outQueue:
@@ -718,7 +766,28 @@ func (server *Server) writePump(ws *WebSocket) {
 			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				log.Debugf("[ESP-WS] Write error for %s: %v", ws.ID(), err)
 				server.error(fmt.Errorf("write failed for %s: %w", ws.ID(), err))
-				server.cleanupConnection(ws)
+				cleanup()
+				return
+			}
+		case pingData, ok := <-ws.pingMessage:
+			if !ok {
+				return
+			}
+			log.Debugf("[ESP-WS] Sending pong reply to %s", ws.ID())
+			_ = conn.SetWriteDeadline(time.Now().Add(server.timeoutConfig.WriteWait))
+			if err := conn.WriteMessage(websocket.PongMessage, pingData); err != nil {
+				log.Debugf("[ESP-WS] Pong send error for %s: %v", ws.ID(), err)
+				server.error(fmt.Errorf("pong failed for %s: %w", ws.ID(), err))
+				cleanup()
+				return
+			}
+		case <-tickerC:
+			log.Debugf("[ESP-WS] Sending periodic ping to %s", ws.ID())
+			_ = conn.SetWriteDeadline(time.Now().Add(server.timeoutConfig.WriteWait))
+			if err := conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+				log.Debugf("[ESP-WS] Ping send error for %s: %v", ws.ID(), err)
+				server.error(fmt.Errorf("ping failed for %s: %w", ws.ID(), err))
+				cleanup()
 				return
 			}
 		case closeErr := <-ws.closeC:
@@ -731,7 +800,7 @@ func (server *Server) writePump(ws *WebSocket) {
 				log.Debugf("[ESP-WS] Error sending close message for %s: %v", ws.ID(), err)
 			}
 			log.Debugf("[ESP-WS] Invoking cleanup after close signal for %s", ws.ID())
-			server.cleanupConnection(ws)
+			cleanup()
 			return
 		case pingData, ok := <-ws.pingMessage:
 			if !ok {
@@ -750,7 +819,7 @@ func (server *Server) writePump(ws *WebSocket) {
 			log.Debugf("[ESP-WS] Force close signal received for %s (ok=%v, err=%v)", ws.ID(), ok, closed)
 			if !ok || closed != nil {
 				log.Debugf("[ESP-WS] Invoking cleanup after force close for %s", ws.ID())
-				server.cleanupConnection(ws)
+				cleanup()
 			}
 			return
 		}
