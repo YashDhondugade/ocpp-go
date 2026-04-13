@@ -509,8 +509,13 @@ func (d *DefaultServerDispatcher) SendRequest(clientID string, req RequestBundle
 	log.Infof("[DefaultServerDispatcher] ESP SendRequest: About to acquire lock for %s (client: %s)", req.Call.UniqueId, clientID)
 	d.mutex.RLock()
 	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Acquired lock, about to write to channel for %s (client: %s)", req.Call.UniqueId, clientID)
-	d.requestChannel <- clientID
-	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Wrote to channel, about to release lock for %s (client: %s)", req.Call.UniqueId, clientID)
+	select {
+	case d.requestChannel <- clientID:
+		log.Infof("[DefaultServerDispatcher] ESP SendRequest: Wrote to channel for %s (client: %s)", req.Call.UniqueId, clientID)
+	default:
+		log.Infof("[DefaultServerDispatcher] ESP SendRequest: requestChannel full, skipping signal for %s (client: %s)", req.Call.UniqueId, clientID)
+	}
+	log.Infof("[DefaultServerDispatcher] ESP SendRequest: about to release lock for %s (client: %s)", req.Call.UniqueId, clientID)
 	d.mutex.RUnlock()
 	log.Infof("[DefaultServerDispatcher] ESP SendRequest: Released lock for %s (client: %s)", req.Call.UniqueId, clientID)
 	return nil
@@ -684,7 +689,11 @@ func (d *DefaultServerDispatcher) waitForTimeout(clientID string, clientCtx clie
 			d.mutex.RLock()
 			defer d.mutex.RUnlock()
 			if d.running {
-				d.timerC <- clientID
+				select {
+				case d.timerC <- clientID:
+				default:
+					log.Debugf("[DefaultServerDispatcher] waitForTimeout: timerC full, skipping signal for client %s", clientID)
+				}
 			}
 		} else {
 			log.Debugf("timeout canceled for %s", clientID)
@@ -716,8 +725,12 @@ func (d *DefaultServerDispatcher) CompleteRequest(clientID string, requestID str
 	log.Debugf("completed request %s for %s", callID, clientID)
 	// Signal that next message in queue may be sent
 	log.Debugf("[DefaultServerDispatcher] CompleteRequest: about to write to readyForDispatch for client %s", clientID)
-	d.readyForDispatch <- clientID
-	log.Debugf("[DefaultServerDispatcher] CompleteRequest: wrote to readyForDispatch for client %s", clientID)
+	select {
+	case d.readyForDispatch <- clientID:
+		log.Debugf("[DefaultServerDispatcher] CompleteRequest: wrote to readyForDispatch for client %s", clientID)
+	default:
+		log.Debugf("[DefaultServerDispatcher] CompleteRequest: readyForDispatch full, skipping signal for client %s", clientID)
+	}
 }
 
 // CheckHealth returns diagnostic information about the dispatcher's current state
