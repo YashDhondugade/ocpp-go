@@ -98,11 +98,15 @@ type DefaultClientDispatcher struct {
 	timer               *time.Timer
 	paused              bool
 	timeout             time.Duration
+	channelBufferSize   int
 }
 
 const (
 	defaultTimeoutTick    = 24 * time.Hour
 	defaultMessageTimeout = 30 * time.Second
+
+	defaultClientChannelBufferSize = 1
+	defaultServerChannelBufferSize = 1500
 )
 
 // NewDefaultClientDispatcher creates a new DefaultClientDispatcher struct.
@@ -110,9 +114,10 @@ func NewDefaultClientDispatcher(queue RequestQueue) *DefaultClientDispatcher {
 	return &DefaultClientDispatcher{
 		requestQueue:        queue,
 		requestChannel:      nil,
-		readyForDispatch:    make(chan bool, 1),
+		readyForDispatch:    make(chan bool, defaultClientChannelBufferSize),
 		pendingRequestState: NewClientState(),
 		timeout:             defaultMessageTimeout,
+		channelBufferSize:   defaultClientChannelBufferSize,
 	}
 }
 
@@ -124,11 +129,19 @@ func (d *DefaultClientDispatcher) SetTimeout(timeout time.Duration) {
 	d.timeout = timeout
 }
 
+// SetChannelBufferSize sets the buffer size for internal dispatcher channels
+// (requestChannel and readyForDispatch). Must be called before Start().
+func (d *DefaultClientDispatcher) SetChannelBufferSize(size int) {
+	d.channelBufferSize = size
+	// Recreate readyForDispatch with new size (it's created in the constructor)
+	d.readyForDispatch = make(chan bool, size)
+}
+
 func (d *DefaultClientDispatcher) Start() {
 	log.Info("[DefaultClientDispatcher] Starting dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
-	d.requestChannel = make(chan bool, 1)
+	d.requestChannel = make(chan bool, d.channelBufferSize)
 	d.timer = time.NewTimer(defaultTimeoutTick) // Default to 24 hours tick
 	go d.messagePump()
 	log.Info("[DefaultClientDispatcher] Started dispatcher")
@@ -407,6 +420,7 @@ type DefaultServerDispatcher struct {
 	onRequestCancel     CanceledRequestHandler
 	network             ws.WsServer
 	mutex               sync.RWMutex
+	channelBufferSize   int
 }
 
 // Handler function to be invoked when a request gets canceled (either due to timeout or to other external factors).
@@ -425,10 +439,11 @@ func (c clientTimeoutContext) isActive() bool {
 // NewDefaultServerDispatcher creates a new DefaultServerDispatcher struct.
 func NewDefaultServerDispatcher(queueMap ServerQueueMap) *DefaultServerDispatcher {
 	d := &DefaultServerDispatcher{
-		queueMap:         queueMap,
-		requestChannel:   nil,
-		readyForDispatch: make(chan string, 1500),
-		timeout:          defaultMessageTimeout,
+		queueMap:          queueMap,
+		requestChannel:    nil,
+		readyForDispatch:  make(chan string, defaultServerChannelBufferSize),
+		timeout:           defaultMessageTimeout,
+		channelBufferSize: defaultServerChannelBufferSize,
 	}
 	d.pendingRequestState = NewServerState(&d.mutex)
 	return d
@@ -438,8 +453,8 @@ func (d *DefaultServerDispatcher) Start() {
 	log.Info("[DefaultServerDispatcher] Starting dispatcher")
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
-	d.requestChannel = make(chan string, 1500)
-	d.timerC = make(chan string, 1500)
+	d.requestChannel = make(chan string, d.channelBufferSize)
+	d.timerC = make(chan string, d.channelBufferSize)
 	d.stoppedC = make(chan struct{}, 1)
 	d.running = true
 	go d.messagePump()
@@ -463,6 +478,14 @@ func (d *DefaultServerDispatcher) Stop() {
 
 func (d *DefaultServerDispatcher) SetTimeout(timeout time.Duration) {
 	d.timeout = timeout
+}
+
+// SetChannelBufferSize sets the buffer size for internal dispatcher channels
+// (requestChannel, readyForDispatch, and timerC). Must be called before Start().
+func (d *DefaultServerDispatcher) SetChannelBufferSize(size int) {
+	d.channelBufferSize = size
+	// Recreate readyForDispatch with new size (it's created in the constructor)
+	d.readyForDispatch = make(chan string, size)
 }
 
 func (d *DefaultServerDispatcher) CreateClient(clientID string) {
