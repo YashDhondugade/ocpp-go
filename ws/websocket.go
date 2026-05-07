@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,10 @@ const (
 	// time, the first time it tries to reconnect.
 	defaultRetryBackOffWaitMinimum = 10 * time.Second
 )
+
+// DefaultCapacityRetryAfterSeconds is the value sent in the Retry-After header
+// when the capacity-check handler rejects an upgrade with 503.
+const DefaultCapacityRetryAfterSeconds = 30
 
 // The internal verbose logger
 var log logging.Logger
@@ -280,6 +285,12 @@ type WsServer interface {
 	// SetCheckClientHandler sets a handler for validate incoming websocket connections, allowing to perform
 	// custom client connection checks.
 	SetCheckClientHandler(handler func(id string, r *http.Request) bool)
+	// SetCapacityCheckHandler sets a handler called before basic-auth and the
+	// validation hook. Returning false causes the server to respond with
+	// HTTP 503 Service Unavailable and a Retry-After header, signalling that
+	// the server is at capacity and the client should retry later. This is
+	// distinct from the 401 emitted by SetCheckClientHandler / SetBasicAuthHandler.
+	SetCapacityCheckHandler(handler func(id string, r *http.Request) bool)
 	// Addr gives the address on which the server is listening, useful if, for
 	// example, the port is system-defined (set to 0).
 	Addr() *net.TCPAddr
@@ -295,20 +306,21 @@ type WsServer interface {
 //
 // Use the NewServer or NewTLSServer functions to create a new server.
 type Server struct {
-	connections         sync.Map
-	httpServer          *http.Server
-	messageHandler      func(ws Channel, data []byte) error
-	checkClientHandler  func(id string, r *http.Request) bool
-	newClientHandler    func(ws Channel)
-	disconnectedHandler func(ws Channel)
-	basicAuthHandler    func(username string, password string) bool
-	tlsCertificatePath  string
-	tlsCertificateKey   string
-	timeoutConfig       ServerTimeoutConfig
-	upgrader            websocket.Upgrader
-	errC                chan error
-	addr                *net.TCPAddr
-	httpHandler         *mux.Router
+	connections          sync.Map
+	httpServer           *http.Server
+	messageHandler       func(ws Channel, data []byte) error
+	checkClientHandler   func(id string, r *http.Request) bool
+	capacityCheckHandler func(id string, r *http.Request) bool
+	newClientHandler     func(ws Channel)
+	disconnectedHandler  func(ws Channel)
+	basicAuthHandler     func(username string, password string) bool
+	tlsCertificatePath   string
+	tlsCertificateKey    string
+	timeoutConfig        ServerTimeoutConfig
+	upgrader             websocket.Upgrader
+	errC                 chan error
+	addr                 *net.TCPAddr
+	httpHandler          *mux.Router
 }
 
 // Creates a new simple websocket server (the websockets are not secured).
@@ -361,6 +373,10 @@ func (server *Server) SetMessageHandler(handler func(ws Channel, data []byte) er
 
 func (server *Server) SetCheckClientHandler(handler func(id string, r *http.Request) bool) {
 	server.checkClientHandler = handler
+}
+
+func (server *Server) SetCapacityCheckHandler(handler func(id string, r *http.Request) bool) {
+	server.capacityCheckHandler = handler
 }
 
 func (server *Server) SetNewClientHandler(handler func(ws Channel)) {
@@ -558,6 +574,17 @@ out:
 	}
 	if negotiatedSuprotocol != "" {
 		responseHeader.Add("Sec-WebSocket-Protocol", negotiatedSuprotocol)
+	}
+	// Capacity check runs before auth + validation. Reject with 503 +
+	// Retry-After when the server is at capacity, distinct from the 401
+	// emitted by auth/validation failures.
+	if server.capacityCheckHandler != nil {
+		if ok := server.capacityCheckHandler(id, r); !ok {
+			server.error(fmt.Errorf("capacity check: rejecting %s, server at capacity", id))
+			w.Header().Set("Retry-After", strconv.Itoa(DefaultCapacityRetryAfterSeconds))
+			http.Error(w, "Service Unavailable: at capacity", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	// Handle client authentication
 	if server.basicAuthHandler != nil {
