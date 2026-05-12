@@ -22,11 +22,18 @@ import (
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
 	"github.com/lorenzodonini/ocpp-go/ocppj"
 	"github.com/lorenzodonini/ocpp-go/ws"
-	"github.com/sirupsen/logrus"
 )
 
 // The internal verbose logger
-var log logger.Logger = &logrus.Logger{}
+var log logger.Logger = &logger.VoidLogger{}
+
+// SetLogger sets a custom Logger implementation for the ocpp1.6 package.
+func SetLogger(l logger.Logger) {
+	if l == nil {
+		panic("cannot set a nil logger")
+	}
+	log = l
+}
 
 type centralSystem struct {
 	server                *ocppj.Server
