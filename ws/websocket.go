@@ -813,7 +813,7 @@ func (server *Server) writePump(ws *WebSocket) {
 		case <-tickerC:
 			log.Debugf("[ESP-WS] Sending periodic ping to %s", ws.ID())
 			_ = conn.SetWriteDeadline(time.Now().Add(server.timeoutConfig.WriteWait))
-			if err := conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+			if err := conn.WriteMessage(websocket.PingMessage, []byte("Hello")); err != nil {
 				log.Debugf("[ESP-WS] Ping send error for %s: %v", ws.ID(), err)
 				server.error(fmt.Errorf("ping failed for %s: %w", ws.ID(), err))
 				cleanup()
@@ -1178,7 +1178,7 @@ func (client *Client) writePump() {
 			// Send periodic ping
 			log.Debugf("[WsClient] Sending periodic ping for %s", client.webSocket.id)
 			_ = conn.SetWriteDeadline(time.Now().Add(client.timeoutConfig.WriteWait))
-			if err := conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+			if err := conn.WriteMessage(websocket.PingMessage, []byte("Hello")); err != nil {
 				log.Debugf("[WsClient] Ping send error for %s: %v", client.webSocket.id, err)
 				client.error(fmt.Errorf("failed to send ping message: %w", err))
 				closure(err)
